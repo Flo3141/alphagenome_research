@@ -137,13 +137,13 @@ class GeneMaskVariantScorerTest(parameterized.TestCase):
     self.assertLen(metadata, 2)
     self.assertSequenceEqual(list(metadata.gene_id), ['G1', 'G2'])
 
-    self.assertEqual(gene_masks.shape, (256, pad_num_genes))
+    self.assertEqual(gene_masks.gene_mask.shape, (256, pad_num_genes))
     expected_g1_mask = np.zeros(256, dtype=bool)
     expected_g1_mask[101:200] = True
     expected_g2_mask = np.zeros(256, dtype=bool)
     expected_g2_mask[0:108] = True
-    np.testing.assert_array_equal(gene_masks[:, 0], expected_g1_mask)
-    np.testing.assert_array_equal(gene_masks[:, 1], expected_g2_mask)
+    np.testing.assert_array_equal(gene_masks.gene_mask[:, 0], expected_g1_mask)
+    np.testing.assert_array_equal(gene_masks.gene_mask[:, 1], expected_g2_mask)
 
   @parameterized.product(
       [
@@ -206,7 +206,7 @@ class GeneMaskVariantScorerTest(parameterized.TestCase):
     )
     expected_g1_mask = np.zeros((11, pad_num_genes), dtype=bool)
     expected_g1_mask[4:7, 0] = True
-    np.testing.assert_array_equal(gene_masks, expected_g1_mask)
+    np.testing.assert_array_equal(gene_masks.gene_mask, expected_g1_mask)
 
     ref = (
         jnp.arange(11, dtype=jnp.float32)

@@ -24,6 +24,7 @@ from alphagenome.models import variant_scorers
 from alphagenome_research.model.variant_scoring import gene_mask_extractor as gene_mask_extractor_lib
 from alphagenome_research.model.variant_scoring import variant_scoring
 import anndata
+import chex
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float32  # pylint: disable=g-multiple-import, g-importing-member
@@ -75,9 +76,16 @@ def _score_gene_variant(
       )
 
 
+@typing.jaxtyped
+@chex.dataclass(frozen=True)
+class GeneVariantMasks:
+  gene_mask: Bool[Array | np.ndarray, 'S G']
+  indel_mask: variant_scoring.IndelMask
+
+
 class GeneVariantScorer(
     variant_scoring.VariantScorer[
-        Bool[np.ndarray | Array, 'S G'],
+        GeneVariantMasks,
         pd.DataFrame,
         _VariantScorerSettings,
     ]
@@ -105,7 +113,7 @@ class GeneVariantScorer(
       *,
       settings: _VariantScorerSettings,
       track_metadata: dna_output.OutputMetadata,
-  ) -> tuple[Bool[np.ndarray | Array, 'S G'], pd.DataFrame]:
+  ) -> tuple[GeneVariantMasks, pd.DataFrame]:
     """Get gene masks and metadata for the given interval and variant.
 
     Note that the gene mask returned for the REF allele is just the normal
@@ -144,7 +152,12 @@ class GeneVariantScorer(
         (interval.width, self._pad_num_genes), dtype=bool
     )
     padded_gene_mask[:, :num_genes] = gene_mask
-    return (padded_gene_mask, metadata)
+
+    gene_masks = GeneVariantMasks(
+        gene_mask=padded_gene_mask,
+        indel_mask=variant_scoring.IndelMask.from_variant(variant, interval),
+    )
+    return (gene_masks, metadata)
 
   @typing.jaxtyped
   def score_variant(
@@ -152,15 +165,16 @@ class GeneVariantScorer(
       ref: variant_scoring.ScoreVariantInput,
       alt: variant_scoring.ScoreVariantInput,
       *,
-      masks: Bool[Array, 'S G'],
+      masks: GeneVariantMasks,
       settings: _VariantScorerSettings,
       variant: genome.Variant | None = None,
       interval: genome.Interval | None = None,
   ) -> variant_scoring.ScoreVariantOutput:
+    del variant, interval  # Unused.
     alt = alt[settings.requested_output]
     ref = ref[settings.requested_output]
-    alt = variant_scoring.align_alternate(alt, variant, interval)
-    output = _score_gene_variant(ref, alt, masks, settings=settings)
+    alt = variant_scoring.align_alternate(alt, masks.indel_mask)
+    output = _score_gene_variant(ref, alt, masks.gene_mask, settings=settings)
     return {'score': output}
 
   def finalize_variant(

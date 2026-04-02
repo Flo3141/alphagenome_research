@@ -39,6 +39,7 @@ _PAS_MASK_WIDTH = 400
 class PolyadenylationVariantMasks:
   pas_mask: Bool[Array | np.ndarray, 'S G P']
   gene_mask: Bool[Array | np.ndarray, 'G']
+  indel_mask: variant_scoring.IndelMask
 
 
 @jax.jit
@@ -182,7 +183,11 @@ class PolyadenylationVariantScorer(variant_scoring.VariantScorer):
 
     return (
         PolyadenylationVariantMasks(
-            pas_mask=pas_mask, gene_mask=gene_padding_mask
+            pas_mask=pas_mask,
+            gene_mask=gene_padding_mask,
+            indel_mask=variant_scoring.IndelMask.from_variant(
+                variant, interval
+            ),
         ),
         pd.DataFrame(gene_metadata_rows),
     )
@@ -198,10 +203,11 @@ class PolyadenylationVariantScorer(variant_scoring.VariantScorer):
       interval: genome.Interval | None = None,
   ) -> variant_scoring.ScoreVariantOutput:
     """See base class."""
+    del variant, interval  # Unused.
     ref = ref[settings.requested_output]
     alt = alt[settings.requested_output]
 
-    alt = variant_scoring.align_alternate(alt, variant, interval)
+    alt = variant_scoring.align_alternate(alt, masks.indel_mask)
     return {
         'scores': _aggregate_maximum_ratio_coverage_fc(
             ref, alt, jnp.asarray(masks.pas_mask)

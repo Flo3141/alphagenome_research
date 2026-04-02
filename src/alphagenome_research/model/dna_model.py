@@ -54,7 +54,7 @@ import haiku as hk
 import huggingface_hub
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Float32, Int32, PyTree, Shaped  # pylint: disable=g-importing-member, g-multiple-import
+from jaxtyping import Array, ArrayLike, Bool, Float, Float32, Int32, PyTree, Shaped  # pylint: disable=g-importing-member, g-multiple-import
 import jmp
 import kagglehub
 from kagglehub import auth as kaggle_auth
@@ -151,6 +151,16 @@ def extract_predictions(
 
 
 @typing.jaxtyped
+@chex.dataclass(frozen=True)
+class _SpliceJunctionVariantMasks:
+  """Container for splicing masks used by predict_variant."""
+
+  splice_sites: Bool[ArrayLike, 'B S 5'] | None
+  reference_genes: Bool[ArrayLike, 'B S 1']
+  indel_masks: variant_scoring.IndelMask
+
+
+@typing.jaxtyped
 def _predict(
     params: hk.Params,
     state: hk.State,
@@ -180,8 +190,7 @@ def _predict_variant(
     state: hk.State,
     reference_sequences: Float32[Array, 'B S 4'],
     alternate_sequences: Float32[Array, 'B S 4'],
-    splice_sites: Bool[Array, 'B S 5'] | None,
-    reference_gene_mask: Bool[Array, 'B S 1'],
+    splice_junction_masks: _SpliceJunctionVariantMasks,
     organism_indices: Int32[Array, 'B'],
     strand_reindexing: Mapping[dna_output.OutputType, Int32[Array, '_']],
     negative_strand_mask: Bool[Array, 'B'],
@@ -213,19 +222,39 @@ def _predict_variant(
   )
   reference_splice_sites = (
       reference_predictions['splice_sites_classification']['predictions']
-      * reference_gene_mask
+      * splice_junction_masks.reference_genes
   )
   alternate_splice_sites = alternate_predictions['splice_sites_classification'][
       'predictions'
   ]
+
+  reference_trunk = reference_predictions['embeddings_1bp']
+  alternate_trunk = alternate_predictions['embeddings_1bp']
+
+  def _align_alt(x):
+    return jax.vmap(variant_scoring.align_alternate)(
+        x, splice_junction_masks.indel_masks
+    )
+
+  is_indel = jnp.any(splice_junction_masks.indel_masks.variant_is_indel)
+
+  alternate_trunk = jax.lax.cond(
+      is_indel, _align_alt, lambda x: x, alternate_trunk
+  )
+
   if alternate_splice_sites is not None:
-    alternate_splice_sites = alternate_splice_sites * reference_gene_mask
+    alternate_splice_sites = jax.lax.cond(
+        is_indel, _align_alt, lambda x: x, alternate_splice_sites
+    )
+    alternate_splice_sites = (
+        alternate_splice_sites * splice_junction_masks.reference_genes
+    )
 
   # Get union of splice site positions across ref and alt.
   ref_and_alt_splice_site_positions = splicing.generate_splice_site_positions(
       ref=reference_splice_sites,
       alt=alternate_splice_sites,
-      splice_sites=splice_sites,
+      splice_sites=splice_junction_masks.splice_sites,
       k=num_splice_sites,
       pad_to_length=num_splice_sites,
       threshold=splice_site_threshold,
@@ -233,14 +262,14 @@ def _predict_variant(
   reference_predictions['splice_sites_junction'] = junctions_apply_fn(
       params,
       state,
-      reference_predictions['embeddings_1bp'],
+      reference_trunk,
       ref_and_alt_splice_site_positions,
       organism_indices,
   )
   alternate_predictions['splice_sites_junction'] = junctions_apply_fn(
       params,
       state,
-      alternate_predictions['embeddings_1bp'],
+      alternate_trunk,
       ref_and_alt_splice_site_positions,
       organism_indices,
   )
@@ -649,6 +678,15 @@ class AlphaGenomeModel(dna_model.DnaModel):
       splice_sites = splice_site_extractor.extract(interval)[np.newaxis]
       splice_sites *= reference_gene_mask
 
+    splice_junction_masks = _SpliceJunctionVariantMasks(
+        splice_sites=splice_sites,
+        reference_genes=reference_gene_mask,
+        indel_masks=jax.tree.map(
+            lambda x: x[np.newaxis],
+            variant_scoring.IndelMask.from_variant(variant, interval),
+        ),
+    )
+
     with self._device_context as device, jax.transfer_guard('disallow'):
       reference_sequence = jax.device_put(
           np.asarray(self._one_hot_encoder.encode(reference_sequence))[
@@ -666,13 +704,13 @@ class AlphaGenomeModel(dna_model.DnaModel):
           np.full((1,), convert_to_organism_index(organism), dtype=np.int32),
           device,
       )
+
       reference_predictions, alt_predictions = self._predict_variant(
           self._params,
           self._state,
           reference_sequence,
           alternate_sequence,
-          jax.device_put(splice_sites, device),
-          jax.device_put(reference_gene_mask, device),
+          jax.device_put(splice_junction_masks, device),
           organism_indices,
           requested_outputs=requested_outputs,
           negative_strand_mask=jax.device_put(
@@ -843,6 +881,15 @@ class AlphaGenomeModel(dna_model.DnaModel):
         requested_ontologies=None,
     )
 
+    splice_junction_masks = _SpliceJunctionVariantMasks(
+        splice_sites=splice_sites,
+        reference_genes=reference_gene_mask,
+        indel_masks=jax.tree.map(
+            lambda x: x[np.newaxis],
+            variant_scoring.IndelMask.from_variant(variant, interval),
+        ),
+    )
+
     with self._device_context as device, jax.transfer_guard('disallow'):
 
       reference_predictions, alternate_predictions = self._predict_variant(
@@ -850,8 +897,7 @@ class AlphaGenomeModel(dna_model.DnaModel):
           self._state,
           jax.device_put(reference_sequence, device),
           jax.device_put(alternate_sequence, device),
-          jax.device_put(splice_sites, device),
-          jax.device_put(reference_gene_mask, device),
+          jax.device_put(splice_junction_masks, device),
           jax.device_put(organism_indices, device),
           requested_outputs=requested_outputs,
           negative_strand_mask=jax.device_put(
