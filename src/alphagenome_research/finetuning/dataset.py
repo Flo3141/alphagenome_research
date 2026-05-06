@@ -234,3 +234,193 @@ class DataPipeline:
 
   def close(self):
     self._multi_track_extractor.close()
+
+
+# =============================================================================
+# RNA Half-Life Data Pipeline
+# =============================================================================
+# This pipeline is a *self-contained replacement* for DataPipeline when the
+# training task is RNA half-life regression.  Key differences from DataPipeline:
+#
+#   * Labels are continuous float values (half-life in, e.g., minutes), not
+#     BigWig coverage tracks.
+#   * No BigWig files or MultiTrackExtractor are needed – the labels are read
+#     directly from a CSV/TSV file.
+#   * The CSV file must contain at least the following columns:
+#       - chromosome : str  (e.g. "chr1")
+#       - start      : int  (0-based, inclusive)
+#       - end        : int  (0-based, exclusive)
+#       - half_life  : float  (RNA half-life in natural units, e.g. minutes)
+#     Additional columns are allowed and silently ignored.
+#
+# The pipeline yields DataBatch objects with:
+#   - dna_sequence     : Float32 [S, 4] one-hot encoded DNA
+#   - organism_index   : Int32   scalar (always 0 for human)
+#   - rna_half_life    : Float32 scalar per sequence
+#
+# Usage example:
+#   pipeline = RNAHalfLifeDataPipeline(
+#       fasta_path='/path/to/hg38.fa',
+#       labels_csv_path='/path/to/half_life_labels.csv',
+#       sequence_length=524_288,
+#   )
+#   for batch in pipeline.get_generator():
+#       ...
+# =============================================================================
+
+
+class RNAHalfLifeDataPipeline:
+  """Data pipeline for RNA half-life regression fine-tuning.
+
+  Reads labelled genomic intervals from a CSV file and returns DataBatch
+  objects that pair one-hot encoded DNA sequences with scalar float
+  half-life labels.
+
+  This pipeline intentionally avoids BigWig files and the MultiTrackExtractor
+  machinery because half-life is a per-transcript (i.e., per-sequence) scalar
+  label, not a per-base-pair coverage track.
+  """
+
+  #: Required column names in the labels CSV/TSV file.
+  REQUIRED_COLUMNS: frozenset[str] = frozenset(
+      ['chromosome', 'start', 'end', 'half_life']
+  )
+
+  def __init__(
+      self,
+      *,
+      fasta_path: str,
+      labels_csv_path: str,
+      sequence_length: int,
+      organism: dna_model.Organism = dna_model.Organism.HOMO_SAPIENS,
+      sep: str = ',',
+  ):
+    """Initialises the RNAHalfLifeDataPipeline.
+
+    Args:
+      fasta_path: Path to the reference genome FASTA file.  The standard
+        hg38 path used in AlphaGenome training is:
+        ``'https://storage.googleapis.com/alphagenome/reference/gencode/'
+        'hg38/GRCh38.p13.genome.fa'``
+      labels_csv_path: Path to a CSV (or TSV) file with the following
+        columns: ``chromosome``, ``start``, ``end``, ``half_life``.
+        The ``start`` and ``end`` columns define the genomic interval that is
+        extracted and re-centred to ``sequence_length``.  The ``half_life``
+        column contains the regression target (a non-negative float).
+      sequence_length: The fixed sequence length to extract.  Intervals are
+        re-centred and resized to this length.  Must match the sequence length
+        expected by the AlphaGenome trunk (typically 524_288 bp).
+      organism: The organism.  Currently only HOMO_SAPIENS is supported by
+        the underlying FastaExtractor.
+      sep: Column separator for the labels file (``','`` for CSV, ``'\\t'``
+        for TSV).
+
+    Raises:
+      NotImplementedError: If `organism` is not HOMO_SAPIENS.
+      ValueError: If required columns are missing from the labels file.
+    """
+    if organism != dna_model.Organism.HOMO_SAPIENS:
+      raise NotImplementedError('Only HOMO_SAPIENS is currently supported.')
+
+    self._fasta_extractor = fasta.FastaExtractor(fasta_path)
+    self._sequence_length = sequence_length
+    self._organism_index = 0  # Only one organism is supported.
+    self._one_hot_encoder = one_hot_encoder.DNAOneHotEncoder()
+
+    # ---- Load and validate the labels CSV -----------------------------------
+    self._labels = pd.read_csv(labels_csv_path, sep=sep)
+    missing = self.REQUIRED_COLUMNS - set(self._labels.columns)
+    if missing:
+      raise ValueError(
+          f'Required columns missing from labels file: {missing}. '
+          f'Available columns: {list(self._labels.columns)}'
+      )
+    # Cast to the expected dtypes for safety.
+    self._labels['start'] = self._labels['start'].astype(int)
+    self._labels['end'] = self._labels['end'].astype(int)
+    self._labels['half_life'] = self._labels['half_life'].astype(float)
+
+  def get_element(self, idx: int) -> dict[str, Any]:
+    """Returns a single (sequence, half-life) pair from the dataset.
+
+    Args:
+      idx: Row index into the labels DataFrame.
+
+    Returns:
+      A dict with keys ``'dna_sequence'`` (float32 NumPy array [S, 4]),
+      ``'organism_index'`` (int scalar), and ``'rna_half_life'`` (float32
+      scalar).
+    """
+    row = self._labels.iloc[idx]
+    interval = genome.Interval(
+        chromosome=row['chromosome'],
+        start=int(row['start']),
+        end=int(row['end']),
+    )
+    # Re-centre the interval to the requested sequence length.
+    interval = interval.resize(self._sequence_length)
+
+    seq_str = self._fasta_extractor.extract(interval)
+    seq_one_hot = self._one_hot_encoder.encode(seq_str)
+
+    half_life = np.float32(row['half_life'])
+
+    return {
+        'dna_sequence': seq_one_hot,
+        'organism_index': self._organism_index,
+        'rna_half_life': half_life,
+    }
+
+  def get_output_signature(self) -> dict[str, tf.TensorSpec]:
+    """Returns the tf.data output signature for use with from_generator.
+
+    Returns:
+      A dict of ``tf.TensorSpec`` objects describing the shapes and dtypes
+      produced by :meth:`get_generator`.
+    """
+    return {
+        'dna_sequence': tf.TensorSpec(
+            shape=(self._sequence_length, 4), dtype=tf.float32
+        ),
+        'organism_index': tf.TensorSpec(shape=[], dtype=tf.int32),
+        # Scalar half-life label (one value per sequence).
+        'rna_half_life': tf.TensorSpec(shape=[], dtype=tf.float32),
+    }
+
+  def get_generator(
+      self,
+      num_epochs: int = -1,
+      shuffle: bool = True,
+      seed: int = 0,
+  ) -> Iterator[dict[str, Any]]:
+    """Returns a generator that yields (sequence, half-life) pairs.
+
+    Args:
+      num_epochs: Number of epochs to run.  Use ``-1`` (default) for an
+        infinite loop, which is the standard setting for ``tf.data`` pipelines.
+      shuffle: Whether to shuffle the dataset at the start of each epoch.
+      seed: Random seed for reproducible shuffling.
+
+    Yields:
+      Dicts as returned by :meth:`get_element`, skipping any intervals for
+      which extraction fails (with a warning).
+    """
+    rng = np.random.default_rng(seed=seed)
+    num_epochs = num_epochs if num_epochs > 0 else float('inf')
+    epoch_idx = 0
+    while epoch_idx < num_epochs:
+      epoch_idx += 1
+      if shuffle:
+        self._labels = self._labels.sample(
+            frac=1, random_state=rng
+        ).reset_index(drop=True)
+      for idx in range(len(self._labels)):
+        try:
+          yield self.get_element(idx)
+        except Exception as e:  # pylint: disable=broad-except
+          logging.warning(
+              'Failed to get interval at index %d (row: %s). Error: %s',
+              idx,
+              self._labels.iloc[idx].to_dict(),
+              e,
+          )

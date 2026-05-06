@@ -129,7 +129,15 @@ class AlphaGenome(hk.Module):
     self._head_configs: dict[heads_module.HeadName, heads_module.HeadConfig] = (
         {}
     )
+    # RNA half-life head is handled separately because it has no associated
+    # organism-level track metadata (it is a scalar regression task).
+    self._rna_half_life_head: heads_module.RNAHalfLifeHead | None = None
+    self._rna_half_life_config: heads_module.RNAHalfLifeHeadConfig | None = None
     for head in heads_module.HeadName:
+      # The RNA half-life head does not use track metadata and is handled
+      # separately; skip it in the general initialisation loop.
+      if head == heads_module.HeadName.RNA_HALF_LIFE:
+        continue
       head_config = heads_module.get_head_config(head)
       output_type = head_config.output_type
       organisms_with_metadata = [
@@ -156,6 +164,43 @@ class AlphaGenome(hk.Module):
           num_organisms=num_organisms,
       )
       self._head_configs[head] = head_config
+
+  def enable_rna_half_life_head(
+      self,
+      *,
+      hidden_dim: int = 512,
+      dropout_rate: float = 0.1,
+      huber_delta: float = 1.0,
+  ) -> None:
+    """Enables the RNA half-life regression head for fine-tuning.
+
+    Call this method *before* initialising the model parameters (i.e., before
+    calling ``hk.transform_with_state``).  The head's parameters will be
+    created alongside the trunk's parameters on the first forward pass.
+
+    Args:
+      hidden_dim: Width of the hidden MLP layer inside the head.
+      dropout_rate: Dropout rate applied during training (0.0 = disabled).
+      huber_delta: Huber loss delta (transition from quadratic to linear).
+    """
+    config = heads_module.get_head_config(heads_module.HeadName.RNA_HALF_LIFE)
+    assert isinstance(config, heads_module.RNAHalfLifeHeadConfig)
+    # Override defaults with caller-provided values.
+    self._rna_half_life_config = heads_module.RNAHalfLifeHeadConfig(
+        type=config.type,
+        name=config.name,
+        output_type=config.output_type,
+        loss_weight=config.loss_weight,
+        hidden_dim=hidden_dim,
+        dropout_rate=dropout_rate,
+        huber_delta=huber_delta,
+    )
+    self._rna_half_life_head = heads_module.RNAHalfLifeHead(
+        name=self._rna_half_life_config.name,
+        hidden_dim=hidden_dim,
+        dropout_rate=dropout_rate,
+        huber_delta=huber_delta,
+    )
 
   @hk.name_like('__call__')
   def predict_junctions(
@@ -191,12 +236,16 @@ class AlphaGenome(hk.Module):
       self,
       dna_sequence: Float[Array, 'B S 4'],
       organism_index: Int[Array, 'B'],
+      is_training: bool = False,
   ) -> tuple[PyTree[Shaped[Array, 'B ...']], embeddings_module.Embeddings]:
     """Encodes a sequence of DNA and makes predictions for various heads.
 
     Args:
       dna_sequence: The sequence of DNA to encode.
       organism_index: The organism index.
+      is_training: Whether the model is in training mode.  This controls
+        dropout in the RNA half-life head (and any other future heads that
+        use stochastic regularisation).
 
     Returns:
       A tuple of (predictions, embeddings), where predictions is a dictionary
@@ -267,16 +316,29 @@ class AlphaGenome(hk.Module):
       predictions[junction_head.value] = self.predict_junctions(
           embeddings.embeddings_1bp, splice_site_positions, organism_index
       )
+
+    # ---- RNA half-life head -------------------------------------------------
+    # This head produces a per-sequence scalar and does not depend on the
+    # splice-site predictions, so it can be called independently after the
+    # trunk has been computed.
+    if self._rna_half_life_head is not None:
+      with hk.name_scope('head'):
+        predictions[heads_module.HeadName.RNA_HALF_LIFE.value] = (
+            self._rna_half_life_head(embeddings, is_training=is_training)
+        )
+
     return predictions, embeddings
 
   @typing.jaxtyped
   def loss(
-      self, batch: schemas.DataBatch
+      self, batch: schemas.DataBatch, is_training: bool = False
   ) -> tuple[
       Float[Array, ''], PyTree[Float[Array, '']], PyTree[Shaped[Array, 'B ...']]
   ]:
     """Returns the loss for the model."""
-    predictions, _ = self(batch.dna_sequence, batch.get_organism_index())
+    predictions, _ = self(
+        batch.dna_sequence, batch.get_organism_index(), is_training=is_training
+    )
     total_loss, all_scalars = 0.0, {}
     for head_name, head_fn in self._heads.items():
       scalars = head_fn.loss(predictions[head_name.value], batch)
@@ -284,4 +346,19 @@ class AlphaGenome(hk.Module):
           {f'{head_name.value}_{k}': v for k, v in scalars.items()}
       )
       total_loss += self._head_configs[head_name].loss_weight * scalars['loss']
+
+    # ---- RNA half-life loss -------------------------------------------------
+    if (
+        self._rna_half_life_head is not None
+        and self._rna_half_life_config is not None
+    ):
+      hl_key = heads_module.HeadName.RNA_HALF_LIFE.value
+      hl_scalars = self._rna_half_life_head.loss(
+          predictions[hl_key], batch
+      )
+      all_scalars.update({f'{hl_key}_{k}': v for k, v in hl_scalars.items()})
+      total_loss += (
+          self._rna_half_life_config.loss_weight * hl_scalars['loss']
+      )
+
     return total_loss, all_scalars, predictions

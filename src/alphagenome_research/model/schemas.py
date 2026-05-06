@@ -50,6 +50,9 @@ class DataBatch:
   splice_site_usage: Float[ArrayLike, 'B S C_SPLICE_SITE_USAGE'] | None = None
   splice_sites: Bool[ArrayLike, 'B S C_SPLICE_SITES'] | None = None
   gene_mask: Bool[ArrayLike, 'B S 2 G'] | None = None
+  # Scalar regression target for RNA half-life prediction (one value per
+  # sequence in the batch). Shape [B].
+  rna_half_life: Float[ArrayLike, 'B'] | None = None
 
   def get_organism_index(self) -> Int[ArrayLike, 'B']:
     """Returns the organism index data."""

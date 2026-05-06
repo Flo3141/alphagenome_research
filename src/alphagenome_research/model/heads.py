@@ -49,6 +49,7 @@ class HeadType(enum.Enum):
   SPLICE_SITES_CLASSIFICATION = 'splice_sites_classification'
   SPLICE_SITES_USAGE = 'splice_sites_usage'
   SPLICE_SITES_JUNCTION = 'splice_sites_junction'
+  RNA_HALF_LIFE = 'rna_half_life'
 
 
 class HeadName(enum.Enum):
@@ -65,6 +66,7 @@ class HeadName(enum.Enum):
   SPLICE_SITES_CLASSIFICATION = 'splice_sites_classification'
   SPLICE_SITES_USAGE = 'splice_sites_usage'
   SPLICE_SITES_JUNCTION = 'splice_sites_junction'
+  RNA_HALF_LIFE = 'rna_half_life'
 
 
 @dataclasses.dataclass
@@ -80,6 +82,18 @@ class GenomeTracksHeadConfig(HeadConfig):
   resolutions: Sequence[int]
   apply_squashing: bool
   bundle: bundles.BundleName
+
+
+@dataclasses.dataclass
+class RNAHalfLifeHeadConfig(HeadConfig):
+  """Configuration for the RNA half-life regression head."""
+
+  # Dimension of the hidden MLP layer inside the head.
+  hidden_dim: int = 512
+  # Dropout probability applied during training (0.0 = disabled).
+  dropout_rate: float = 0.1
+  # Huber loss delta: transitions from quadratic to linear at this value.
+  huber_delta: float = 1.0
 
 
 def create_head(
@@ -129,6 +143,16 @@ def create_head(
           output_type=config.output_type,
           metadata=metadata,
           num_organisms=num_organisms,
+      )
+    case HeadType.RNA_HALF_LIFE:
+      # The RNA half-life head does not use track metadata; it only needs
+      # the trunk embeddings.  We therefore pass an empty metadata dict.
+      assert isinstance(config, RNAHalfLifeHeadConfig)
+      return RNAHalfLifeHead(
+          name=config.name,
+          hidden_dim=config.hidden_dim,
+          dropout_rate=config.dropout_rate,
+          huber_delta=config.huber_delta,
       )
     case _:
       raise ValueError(f'Unknown head type: {config.type}')
@@ -234,6 +258,20 @@ def get_head_config(head_name: HeadName) -> HeadConfig:
           name=HeadName.SPLICE_SITES_JUNCTION.value,
           output_type=dna_output.OutputType.SPLICE_JUNCTIONS,
           loss_weight=0.2,
+      )
+    case HeadName.RNA_HALF_LIFE:
+      # Half-life is a scalar regression task; it has no associated
+      # OutputType from the pre-trained AlphaGenome vocabulary.
+      return RNAHalfLifeHeadConfig(
+          type=HeadType.RNA_HALF_LIFE,
+          name=HeadName.RNA_HALF_LIFE.value,
+          # output_type is unused by RNAHalfLifeHead but required by the
+          # base HeadConfig dataclass.  We borrow ATAC as a placeholder.
+          output_type=dna_output.OutputType.ATAC,
+          loss_weight=1.0,
+          hidden_dim=512,
+          dropout_rate=0.1,
+          huber_delta=1.0,
       )
     case _:
       raise ValueError(f'Unknown head name: {head_name}')
@@ -1244,3 +1282,182 @@ class SpliceSitesJunctionHead(Head):
         + 0.2 * (accept_total_loss + donor_total_loss)
     )
     return {'loss': loss}
+
+
+# =============================================================================
+# RNA Half-Life Regression Head
+# =============================================================================
+# Unlike the other heads above, RNAHalfLifeHead does NOT inherit from Head
+# because it:
+#   1. Does not require organism-specific multi-track metadata.
+#   2. Predicts a *scalar* per sequence, not a per-position track.
+#   3. Is designed to be used as a standalone fine-tuning head on top of the
+#      frozen AlphaGenome trunk.
+#
+# The forward pass:
+#   embeddings_128bp  [B, S//128, 3072]
+#       --> mean-pool over S//128  [B, 3072]
+#       --> Linear(3072 -> hidden_dim) + GELU + Dropout
+#       --> Linear(hidden_dim -> 1)
+#       --> squeeze  [B]
+#
+# The loss operates in log1p space because RNA half-life values are
+# highly right-skewed (e.g., spanning 1 min to several hours).  Working in
+# log space compresses the dynamic range and improves gradient signal.
+# Huber loss (smooth L1) is preferred over MSE because it is less sensitive
+# to outlier measurements.
+# =============================================================================
+
+
+class RNAHalfLifeHead(hk.Module):
+  """Regression head that predicts RNA half-life from trunk embeddings.
+
+  Produces a single scalar output per input sequence by:
+    1. Global mean-pooling of the 128-bp-resolution trunk embeddings.
+    2. Two-layer MLP with GELU activations.
+    3. Linear projection to a single output scalar.
+
+  The loss is Huber (smooth L1) in log1p space, which is numerically
+  stable for skewed half-life distributions and robust to outliers.
+
+  This module is designed to be used as a *fine-tuning head only*. It should
+  be combined with `AlphaGenome(freeze_trunk_embeddings=True)` and the Optax
+  masking strategy in `finetune.py` so that the pre-trained trunk weights are
+  frozen while only this head's parameters are updated.
+  """
+
+  def __init__(
+      self,
+      *,
+      name: str = 'rna_half_life',
+      hidden_dim: int = 512,
+      dropout_rate: float = 0.1,
+      huber_delta: float = 1.0,
+  ):
+    """Initialises the RNAHalfLifeHead.
+
+    Args:
+      name: Haiku module name used for parameter scoping.
+      hidden_dim: Width of the hidden linear layer in the MLP.
+      dropout_rate: Dropout rate applied after the first hidden layer.
+        Set to 0.0 to disable dropout (e.g., during evaluation).
+      huber_delta: The Huber loss delta.  Residuals smaller than *delta*
+        are treated as quadratic (L2); larger residuals are linear (L1).
+        This controls the transition between the two regimes.
+    """
+    super().__init__(name=name)
+    self._hidden_dim = hidden_dim
+    self._dropout_rate = dropout_rate
+    self._huber_delta = huber_delta
+
+  @typing.jaxtyped
+  def predict(
+      self,
+      embeddings: embeddings_module.Embeddings,
+      is_training: bool = False,
+  ) -> Float[Array, 'B']:
+    """Produces per-sequence half-life predictions from trunk embeddings.
+
+    Args:
+      embeddings: AlphaGenome trunk embeddings.  Only `embeddings_128bp`
+        (shape [B, S//128, 3072]) is used; the 1-bp embeddings are ignored.
+      is_training: Whether the model is in training mode. Activates dropout
+        when True.
+
+    Returns:
+      Predicted log1p-space half-life values, shape [B].
+    """
+    # ---- 1. Global mean-pool over the sequence axis -------------------------
+    # embeddings_128bp: [B, S//128, 3072]
+    x = embeddings.get_sequence_embeddings(128)  # [B, S//128, D=3072]
+    x = jnp.mean(x.astype(jnp.float32), axis=1)  # [B, D=3072]
+
+    # ---- 2. First linear + GELU + optional dropout --------------------------
+    x = hk.Linear(self._hidden_dim, name='fc1')(x)  # [B, hidden_dim]
+    x = jax.nn.gelu(x)
+
+    if is_training and self._dropout_rate > 0.0:
+      # hk.dropout requires an explicit RNG key.  We use hk.next_rng_key()
+      # which is available inside a hk.transform_with_state context.
+      x = hk.dropout(hk.next_rng_key(), self._dropout_rate, x)
+
+    # ---- 3. Second linear + GELU -------------------------------------------
+    x = hk.Linear(self._hidden_dim // 2, name='fc2')(x)  # [B, hidden_dim//2]
+    x = jax.nn.gelu(x)
+
+    # ---- 4. Output projection to scalar ------------------------------------
+    x = hk.Linear(1, name='output')(x)  # [B, 1]
+    return jnp.squeeze(x, axis=-1)  # [B]
+
+  def __call__(
+      self,
+      embeddings: embeddings_module.Embeddings,
+      is_training: bool = False,
+  ) -> dict[str, Float[Array, 'B']]:
+    """Convenience wrapper that returns a prediction dict.
+
+    Args:
+      embeddings: AlphaGenome trunk embeddings.
+      is_training: Whether the model is in training mode.
+
+    Returns:
+      A dict with key ``'predictions'`` containing shape [B] predictions
+      in log1p space.
+    """
+    preds = hk.to_module(self.predict)(self._name)(embeddings, is_training)
+    return {'predictions': preds}
+
+  def loss(
+      self,
+      predictions: dict[str, Float[Array, 'B']],
+      batch: schemas.DataBatch,
+  ) -> dict[str, Float[Array, '']]:
+    """Computes the Huber loss in log1p space.
+
+    Working in log1p space is beneficial because:
+      - RNA half-life values span several orders of magnitude.
+      - log1p(0) = 0, so zero-valued labels are handled gracefully.
+      - The loss is invariant to the absolute scale of the labels.
+
+    Args:
+      predictions: Output of ``__call__``, containing ``'predictions'`` with
+        shape [B] (log1p-space model predictions).
+      batch: The current data batch.  Must contain a ``rna_half_life`` field
+        (shape [B]) with ground-truth half-life values in *natural units*
+        (e.g., minutes), **not** pre-transformed.
+
+    Returns:
+      A dict with ``'loss'`` (scalar) and ``'mae'`` (mean absolute error in
+      log1p space, useful as an interpretable monitoring metric).
+    """
+    if batch.rna_half_life is None:
+      raise ValueError(
+          'rna_half_life target is not present in the batch. '
+          'Make sure to use RNAHalfLifeDataPipeline to build the DataBatch.'
+      )
+
+    y_pred = predictions['predictions'].astype(jnp.float32)  # [B], log1p space
+    # Transform ground-truth labels into log1p space to match predictions.
+    y_true = jnp.log1p(
+        jnp.abs(batch.rna_half_life.astype(jnp.float32))
+    )  # [B]
+
+    residual = y_pred - y_true  # [B]
+
+    # ---- Huber loss (smooth L1) ---------------------------------------------
+    # For |residual| <= delta: 0.5 * residual^2 / delta
+    # For |residual| >  delta: |residual| - 0.5 * delta
+    # This formulation matches the PyTorch / TF convention with
+    # reduction='mean'.
+    abs_residual = jnp.abs(residual)
+    huber = jnp.where(
+        abs_residual <= self._huber_delta,
+        0.5 * jnp.square(residual) / self._huber_delta,
+        abs_residual - 0.5 * self._huber_delta,
+    )
+    loss = jnp.mean(huber)
+
+    # ---- MAE in log1p space (monitoring metric) ----------------------------
+    mae = jnp.mean(abs_residual)
+
+    return {'loss': loss, 'mae': mae}
