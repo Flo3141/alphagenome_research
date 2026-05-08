@@ -3,7 +3,7 @@ import os
 from sklearn.model_selection import train_test_split
 
 def create_train_test_files():
-    df_og = pd.read_csv(os.path.join(DATA_FOLDER,  "half_life_with_coords.csv"), sep="\t")
+    df_og = pd.read_csv(os.path.join(DATA_FOLDER,  "half_life_with_coords.csv"), sep=",")
     
     # We stratify for the half life, so that the distribution in the train and test set is roughly the same
     df_og['half_life_bins'] = pd.qcut(df_og['half_life'], q=NUM_BINS, labels=False, duplicates="drop")
@@ -20,7 +20,7 @@ def create_train_test_files():
     X_train = X_train.drop('half_life_bins', axis=1)
     X_test = X_test.drop('half_life_bins', axis=1)
     
-    X_test.to_csv(os.path.join(DATA_FOLDER, f"half_life_with_coords_test.csv"), sep="\t", index=False)
+    X_test.to_csv(os.path.join(DATA_FOLDER, f"half_life_with_coords_test.csv"), sep=",", index=False)
 
     X_train['half_life_bins'] = pd.qcut(X_train['half_life'], q=NUM_BINS, labels=False, duplicates="drop")
     X_train, X_val = train_test_split(
@@ -32,8 +32,8 @@ def create_train_test_files():
     )
     X_train = X_train.drop('half_life_bins', axis=1)
     X_val = X_val.drop('half_life_bins', axis=1)
-    X_train.to_csv(os.path.join(DATA_FOLDER, f"half_life_with_coords_train.csv"), sep="\t", index=False)
-    X_val.to_csv(os.path.join(DATA_FOLDER, f"half_life_with_coords_val.csv"), sep="\t", index=False)
+    X_train.to_csv(os.path.join(DATA_FOLDER, f"half_life_with_coords_train.csv"), sep=",", index=False)
+    X_val.to_csv(os.path.join(DATA_FOLDER, f"half_life_with_coords_val.csv"), sep=",", index=False)
 
     print(f"Train set size: {X_train.shape[0]}")
     print(f"Validation set size: {X_val.shape[0]}")
