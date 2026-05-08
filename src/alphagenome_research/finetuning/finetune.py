@@ -462,6 +462,7 @@ def get_rna_half_life_train_step(
       params: Any,
       state: Any,
       opt_state: Any,
+      rng: hk.PRNGKey,
       batch: schemas.DataBatch,
   ) -> tuple[Any, Any, Any, dict[str, Any]]:
     """Performs one gradient update step for the RNA half-life head only.
@@ -481,10 +482,10 @@ def get_rna_half_life_train_step(
       - ``scalars``: Dict of monitoring metrics including ``'loss'``.
     """
 
-    def loss_fn(params, state, batch):
+    def loss_fn(params, state, rng, batch):
       # ``is_training=True`` enables dropout inside the head.
       (loss, scalars, predictions), new_state = forward_fn.apply(
-          params, state, None, batch, True  # is_training=True
+          params, state, rng, batch, True  # is_training=True
       )
       del predictions  # Unused.
       return loss, (new_state, scalars)
@@ -493,7 +494,7 @@ def get_rna_half_life_train_step(
     # Because of ``stop_gradient`` on trunk embeddings, the trunk gradients
     # will be zero tensors — they are computed by JAX but carry no signal.
     loss_grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, (next_state, scalars)), grads = loss_grad_fn(params, state, batch)
+    (loss, (next_state, scalars)), grads = loss_grad_fn(params, state, rng, batch)
     scalars['loss'] = loss
 
     # Retrieve the masked optimiser (built on first call).
