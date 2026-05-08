@@ -462,7 +462,7 @@ def get_rna_half_life_train_step(
       params: Any,
       state: Any,
       opt_state: Any,
-      rng: hk.PRNGKey,
+      rng: Any,
       batch: schemas.DataBatch,
   ) -> tuple[Any, Any, Any, dict[str, Any]]:
     """Performs one gradient update step for the RNA half-life head only.
