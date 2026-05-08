@@ -447,7 +447,7 @@ def get_rna_half_life_train_step(
       # ``stop_gradient``).  Using both gives defence-in-depth: even if a
       # future code change accidentally removes the ``stop_gradient``, the
       # optimiser will still not update the trunk parameters.
-      masked_optimizer = optax.masked(
+      masked_optimizer = optax.multi_transform(
           # Inner dict: maps mask value to the transform to apply.
           # True  → apply the real optimiser (update head params).
           # False → apply set_to_zero (freeze trunk params).
@@ -600,7 +600,7 @@ def init_rna_half_life_training(
   # params) because it needs to allocate state for every parameter slot
   # (even if that state is just a dummy for the frozen trunk parameters).
   mask = _make_trunk_mask(params)
-  masked_optimizer = optax.masked(
+  masked_optimizer = optax.multi_transform(
       {True: base_optimizer, False: optax.set_to_zero()}, mask
   )
   opt_state = masked_optimizer.init(params)
