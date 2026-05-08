@@ -341,11 +341,17 @@ class AlphaGenome(hk.Module):
     )
     total_loss, all_scalars = 0.0, {}
     for head_name, head_fn in self._heads.items():
-      scalars = head_fn.loss(predictions[head_name.value], batch)
-      all_scalars.update(
-          {f'{head_name.value}_{k}': v for k, v in scalars.items()}
-      )
-      total_loss += self._head_configs[head_name].loss_weight * scalars['loss']
+      try:
+        scalars = head_fn.loss(predictions[head_name.value], batch)
+        all_scalars.update(
+            {f'{head_name.value}_{k}': v for k, v in scalars.items()}
+        )
+        total_loss += self._head_configs[head_name].loss_weight * scalars['loss']
+      except ValueError as e:
+        # Überspringe diesen Kopf, wenn die Daten im Batch fehlen
+        if "data is not present in the batch" in str(e):
+            continue
+        raise e
 
     # ---- RNA half-life loss -------------------------------------------------
     if (
