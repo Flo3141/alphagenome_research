@@ -1404,7 +1404,7 @@ class RNAHalfLifeHead(hk.Module):
       A dict with key ``'predictions'`` containing shape [B] predictions
       in log1p space.
     """
-    preds = hk.to_module(self.predict)(self._name)(embeddings, is_training)
+    preds = hk.to_module(self.predict)(self.name)(embeddings, is_training)
     return {'predictions': preds}
 
   def loss(
