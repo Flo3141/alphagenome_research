@@ -97,7 +97,7 @@ if __name__ == "__main__":
         train_mae_sum = 0.0
         num_train_steps = 0
         
-        print(f"Training with {len(train_iter)} batches")
+        print(f"Training with {num_train_batches} batches")
         start_time = time.time()
         for step, batch in enumerate(train_iter):
             rng, step_rng = jax.random.split(rng)
@@ -137,7 +137,7 @@ if __name__ == "__main__":
         val_mae_sum = 0.0
         num_val_steps = 0
         
-        print(f"Validating with {len(val_iter)} batches...")
+        print(f"Validating...")
         for batch in val_iter:
             rng, eval_rng = jax.random.split(rng)
             val_scalars = eval_step(params, state, eval_rng, batch)
