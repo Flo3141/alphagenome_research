@@ -29,7 +29,7 @@ if __name__ == "__main__":
     
     batch_size = 4
     sequence_length = 524_288 // 8
-    num_epochs = 10  # Wie oft über den gesamten Datensatz iteriert wird
+    num_epochs = 5  # Wie oft über den gesamten Datensatz iteriert wird
     
     # -------------------------------------------------------------------------
     # 2. MODELL & GEWICHTE LADEN
