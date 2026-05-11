@@ -1,3 +1,4 @@
+from datetime import time
 import os
 import jax
 import optax
@@ -91,7 +92,8 @@ if __name__ == "__main__":
         train_mae_sum = 0.0
         num_train_steps = 0
         
-        print("Training...")
+        print(f"Training with {len(train_iter)} batches")
+        start_time = time.time()
         for step, batch in enumerate(train_iter):
             rng, step_rng = jax.random.split(rng)
             params, state, opt_state, scalars = train_step(params, state, opt_state, step_rng, batch)
@@ -99,10 +101,21 @@ if __name__ == "__main__":
             train_loss_sum += scalars['loss'].item()
             train_mae_sum += scalars['rna_half_life_mae'].item()
             num_train_steps += 1
+
+            if step == 10:
+                print(f"  Time elapsed after 10 steps: {time.time() - start_time:.2f}s")
+                print(f"  Estimated time for 500 steps: {(time.time() - start_time)/10*500}s")
+                print(f"  Estimated time for full epoch: {(time.time() - start_time)/10*len(train_iter)}s")
+                print(f"  Estimated time for full training: {(time.time() - start_time)/10*len(train_iter)*num_epochs}s")
+                print(f"  Estimated time for full training in minutes: {((time.time() - start_time)/10*len(train_iter)*num_epochs)/60}min")
+                print(f"  Estimated time for full training in hours: {((time.time() - start_time)/10*len(train_iter)*num_epochs)/3600}h")
+                print(f"  Estimated time for full training in days: {((time.time() - start_time)/10*len(train_iter)*num_epochs)/86400}days")
             
             # Alle 500 Batches ein kurzes Lebenszeichen drucken
             if step > 0 and step % 500 == 0:
                 print(f"  Step {step} | Current Loss: {scalars['loss'].item():.4f}")
+                print(f"  Time elapsed: {time.time() - start_time:.2f}s --> {((time.time() - start_time) / (step + 1)) * (len(train_iter) - (step + 1)) / 60:.2f} minutes remaining")
+
 
         avg_train_loss = train_loss_sum / max(1, num_train_steps)
         avg_train_mae = train_mae_sum / max(1, num_train_steps)
@@ -119,7 +132,7 @@ if __name__ == "__main__":
         val_mae_sum = 0.0
         num_val_steps = 0
         
-        print("Validating...")
+        print(f"Validating with {len(val_iter)} batches...")
         for batch in val_iter:
             rng, eval_rng = jax.random.split(rng)
             val_scalars = eval_step(params, state, eval_rng, batch)
