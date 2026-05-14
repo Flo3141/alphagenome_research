@@ -23,8 +23,8 @@ if __name__ == "__main__":
     # 1. SETUP & PFADE
     # -------------------------------------------------------------------------
     data_folder = os.environ.get("AG_DATA_FOLDER", ".")
-    train_csv_path = os.path.join(data_folder, "half_life_with_coords_train.csv") # <-- DEIN TRAIN SET
-    val_csv_path = os.path.join(data_folder, "half_life_with_coords_val.csv")     # <-- DEIN VAL SET
+    train_csv_path = os.path.join(data_folder, "half_life_with_coords_train_12.csv") 
+    val_csv_path = os.path.join(data_folder, "half_life_with_coords_val_12.csv")     
     
     alphagenome_checkpoint_path = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/alphagenome/all_folds/1"
     checkpoint_dir = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/checkpoints_rna_half_life"
@@ -82,7 +82,7 @@ if __name__ == "__main__":
     for epoch in range(num_epochs):
         print(f"\n========== EPOCH {epoch+1}/{num_epochs} ==========")
         with open(train_csv_path, 'r', encoding='utf-8') as f:
-            num_samples = sum(1 for line in f) 
+            num_samples = sum(1 for line in f) - 1  # -1 to exclude the header row
 
         num_train_batches = math.ceil(num_samples / batch_size)
 
@@ -107,19 +107,23 @@ if __name__ == "__main__":
             train_mae_sum += scalars['rna_half_life_mae'].item()
             num_train_steps += 1
 
-            if step == 10:
-                print(f"  Time elapsed after 10 steps: {time.time() - start_time:.2f}s")
-                print(f"  Estimated time for 500 steps: {(time.time() - start_time)/10*500}s")
-                print(f"  Estimated time for full epoch: {(time.time() - start_time)/10*num_train_batches}s")
-                print(f"  Estimated time for full training: {(time.time() - start_time)/10*num_train_batches*num_epochs}s")
-                print(f"  Estimated time for full training in minutes: {((time.time() - start_time)/10*num_train_batches*num_epochs)/60}min")
-                print(f"  Estimated time for full training in hours: {((time.time() - start_time)/10*num_train_batches*num_epochs)/3600}h")
-                print(f"  Estimated time for full training in days: {((time.time() - start_time)/10*num_train_batches*num_epochs)/86400}days")
+            if step == 2:
+                print(f"  Time elapsed after 2 steps: {time.time() - start_time:.2f}s")
+                print(f"  Estimated time for 500 steps: {(time.time() - start_time)/2*500}s")
+                print(f"  Estimated time for full epoch: {(time.time() - start_time)/2*num_train_batches}s")
+                print(f"  Estimated time for full training: {(time.time() - start_time)/2*num_train_batches*num_epochs}s")
+                print(f"  Estimated time for full training in minutes: {((time.time() - start_time)/2*num_train_batches*num_epochs)/60}min")
+                print(f"  Estimated time for full training in hours: {((time.time() - start_time)/2*num_train_batches*num_epochs)/3600}h")
+                print(f"  Estimated time for full training in days: {((time.time() - start_time)/2*num_train_batches*num_epochs)/86400}days")
             
             # Alle 500 Batches ein kurzes Lebenszeichen drucken
             if step > 0 and step % 500 == 0:
+                elapsed = time.time() - start_time
+                steps_done = step + 1
+                steps_remaining = max(0, num_train_batches - steps_done)
+                eta_min = (elapsed / steps_done) * steps_remaining / 60
                 print(f"  Step {step} | Current Loss: {scalars['loss'].item():.4f}")
-                print(f"  Time elapsed: {time.time() - start_time:.2f}s --> {((time.time() - start_time) / (step + 1)) * (num_train_batches - (step + 1)) / 60:.2f} minutes remaining")
+                print(f"  Time elapsed: {elapsed:.2f}s --> {eta_min:.2f} minutes remaining (estimated {num_train_batches} batches total)")
 
 
         avg_train_loss = train_loss_sum / max(1, num_train_steps)
@@ -172,7 +176,7 @@ if __name__ == "__main__":
     print("="*50)
 
     # A. Pfad zum Test-Set
-    test_csv_path = os.path.join(data_folder, "half_life_with_coords_test.csv")
+    test_csv_path = os.path.join(data_folder, "half_life_with_coords_test_12.csv")
 
     # B. Das "beste" Modell laden
     best_model_path = os.path.abspath(os.path.join(checkpoint_dir, "best_model"))

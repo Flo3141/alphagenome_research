@@ -197,6 +197,7 @@ def get_rna_half_life_dataset_iterator(
     shuffle: bool = True,
     seed: int = 0,
     sep: str = ',',
+    num_epochs: int = 1,
 ) -> Iterator[schemas.DataBatch]:
   """Returns a batched DataBatch iterator for RNA half-life regression.
 
@@ -231,7 +232,7 @@ def get_rna_half_life_dataset_iterator(
   )
 
   dataset = tf.data.Dataset.from_generator(
-      lambda: pipeline.get_generator(shuffle=shuffle, seed=seed),
+      lambda: pipeline.get_generator(shuffle=shuffle, seed=seed, num_epochs=num_epochs),
       output_signature=pipeline.get_output_signature(),
   )
   dataset = (
