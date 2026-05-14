@@ -15,7 +15,7 @@ def save_head_checkpoint(params, state, checkpoint_dir, step_name, checkpointer)
     path = os.path.abspath(os.path.join(checkpoint_dir, str(step_name)))
     head_params = {k: v for k, v in params.items() if 'rna_half_life' in k}
     head_state = {k: v for k, v in state.items() if 'rna_half_life' in k}
-    checkpointer.save(path, args=ocp.args.StandardSave((head_params, head_state)))
+    checkpointer.save(path, (head_params, head_state))
     print(f"--> Checkpoint saved at: {path}")
 
 if __name__ == "__main__":
