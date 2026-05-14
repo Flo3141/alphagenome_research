@@ -26,15 +26,16 @@ if __name__ == "__main__":
     # 1. SETUP & PFADE
     # -------------------------------------------------------------------------
     data_folder = os.environ.get("AG_DATA_FOLDER", ".")
-    train_csv_path = os.path.join(data_folder, "half_life_with_coords_train_12.csv") 
-    val_csv_path = os.path.join(data_folder, "half_life_with_coords_val_12.csv")     
+    train_csv_path = os.path.join(data_folder, "half_life_with_coords_train.csv") 
+    val_csv_path = os.path.join(data_folder, "half_life_with_coords_val.csv")     
+    test_csv_path = os.path.join(data_folder, "half_life_with_coords_test.csv")
     
     alphagenome_checkpoint_path = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/alphagenome/all_folds/1"
     checkpoint_dir = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/checkpoints_rna_half_life"
     
     batch_size = 4
     sequence_length = 524_288 // 8
-    num_epochs = 5  # Wie oft über den gesamten Datensatz iteriert wird
+    num_epochs = 2  # Wie oft über den gesamten Datensatz iteriert wird
     
     # -------------------------------------------------------------------------
     # 2. MODELL & GEWICHTE LADEN
@@ -177,9 +178,6 @@ if __name__ == "__main__":
     print("\n\n" + "="*50)
     print(" STARTING FINAL TEST EVALUATION")
     print("="*50)
-
-    # A. Pfad zum Test-Set
-    test_csv_path = os.path.join(data_folder, "half_life_with_coords_test_12.csv")
 
     # B. Das "beste" Modell laden
     best_model_path = os.path.abspath(os.path.join(checkpoint_dir, "best_model"))
