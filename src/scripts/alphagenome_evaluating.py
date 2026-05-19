@@ -10,9 +10,9 @@ from alphagenome.models import dna_model
 from alphagenome_research.finetuning import finetune
 from alphagenome_research.model.metadata import metadata as metadata_lib
 
-def evaluate_predictions(path):
+def evaluate_predictions():
     res_text = ""
-    test_pred = os.path.join(path, f"test_predictions.csv")
+    test_pred = os.path.join(checkpoint_dir, f"test_predictions.csv")
     df = pd.read_csv(test_pred)
     df.drop(columns=['sequence'], inplace=True)
     predict_labels = df["prediction"]
@@ -26,18 +26,15 @@ def evaluate_predictions(path):
     res_text += f"Spearman: {all_spearman}\n"
     
     print(res_text)
-    with open(os.path.join(path, "alphagenome_results.txt"), "w") as f:
+    with open(os.path.join(checkpoint_dir, "alphagenome_results.txt"), "w") as f:
         f.write(res_text)
 
-def create_predictions(path):
+def create_predictions():
     # -------------------------------------------------------------------------
     # 1. SETUP & PFADE
     # -------------------------------------------------------------------------
     data_folder = os.environ.get("AG_DATA_FOLDER", ".")
     test_csv_path = os.path.join(data_folder, "half_life_with_coords_test.csv")
-    
-    alphagenome_checkpoint_path = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/alphagenome/all_folds/1"
-    checkpoint_dir = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/checkpoints_rna_half_life"
     
     batch_size = 4
     sequence_length = 524_288 // 8
@@ -165,5 +162,7 @@ def create_predictions(path):
     print(f"Saved predictions to {out_csv_path}")
 
 if __name__ == "__main__":
-    create_predictions(".")
-    evaluate_predictions(".")
+    alphagenome_checkpoint_path = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/alphagenome/all_folds/1"
+    checkpoint_dir = "/beegfs/prj/RNA_NLP/AlphaGenome/weights/checkpoints_rna_half_life"
+    create_predictions()
+    evaluate_predictions()
