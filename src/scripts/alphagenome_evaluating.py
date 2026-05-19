@@ -113,10 +113,10 @@ def create_predictions():
     print("Running inference on test dataset...")
     # D. Über das gesamte Test-Set iterieren
     rng = jax.random.PRNGKey(42)
-
+    start_eval = time.time()
     for step, batch in enumerate(test_iter):
         if step % 100 == 0:
-            print(f"Step {step}")
+            print(f"Step {step}/{num_test_steps}")
         rng, eval_rng = jax.random.split(rng)
         
         # Wir nutzen wieder eval_step (is_training=False), damit Dropout aus ist!
@@ -127,6 +127,10 @@ def create_predictions():
         num_test_steps += 1
         all_preds.append(np.array(batch_preds))
 
+    end_eval = time.time()
+    print(f"Evaluation time: {end_eval - start_eval} seconds with {num_test_steps} batches.")
+    print(f"Per batch: {(end_eval - start_eval) / num_test_steps} seconds.")
+    print(f"Per sample: {(end_eval - start_eval) / (num_test_steps * batch_size)} seconds.")
     # E. Durchschnittliche Fehler berechnen
     avg_test_loss = test_loss_sum / max(1, num_test_steps)
     avg_test_mae = test_mae_sum / max(1, num_test_steps)
