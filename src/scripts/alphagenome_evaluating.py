@@ -112,7 +112,11 @@ def create_predictions():
 
     print("Running inference on test dataset...")
     # D. Über das gesamte Test-Set iterieren
-    for batch in test_iter:
+    rng = jax.random.PRNGKey(42)
+
+    for step, batch in enumerate(test_iter):
+        if step % 100 == 0:
+            print(f"Step {step}")
         rng, eval_rng = jax.random.split(rng)
         
         # Wir nutzen wieder eval_step (is_training=False), damit Dropout aus ist!
