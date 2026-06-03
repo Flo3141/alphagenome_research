@@ -32,7 +32,7 @@ def get_embeddings_forward_fn(output_metadata, jmp_policy='params=float32,comput
             )
             # Die 128bp Embeddings abrufen und wie im RNAHalfLifeHead über die 
             # Sequenzachse (axis=1) mitteln
-            x = embeddings.get_sequence_embeddings(1)
+            x = embeddings.get_sequence_embeddings(128)
             x_pooled = jnp.mean(x.astype(jnp.float32), axis=1)
             
             return x_pooled
