@@ -41,7 +41,7 @@ def get_embeddings_forward_fn(output_metadata, jmp_policy='params=float32,comput
 
 def main():
     data_folder = os.environ.get("AG_DATA_FOLDER", ".")
-    default_csv = os.path.join(data_folder, "half_life_with_coords_train_12.csv")
+    default_csv = os.path.join(data_folder, "half_life_with_coords.csv")
     
     parser = argparse.ArgumentParser(description="Extrahiert AlphaGenome Embeddings für RNA Half-Life")
     parser.add_argument("--csv_path", type=str, default=default_csv, help="Pfad zur Eingabe CSV-Datei")
@@ -154,5 +154,5 @@ def load_embeddings():
     print(embeddings[0])
 
 if __name__ == "__main__":
-    #main()
-    load_embeddings()
+    main()
+    # load_embeddings()
