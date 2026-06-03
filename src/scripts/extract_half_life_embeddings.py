@@ -41,7 +41,7 @@ def get_embeddings_forward_fn(output_metadata, jmp_policy='params=float32,comput
 
 def main():
     data_folder = os.environ.get("AG_DATA_FOLDER", ".")
-    default_csv = os.path.join(data_folder, "half_life_with_coords.csv")
+    default_csv = os.path.join(data_folder, "half_life_with_coords_train_1.csv")
     
     parser = argparse.ArgumentParser(description="Extrahiert AlphaGenome Embeddings für RNA Half-Life")
     parser.add_argument("--csv_path", type=str, default=default_csv, help="Pfad zur Eingabe CSV-Datei")
@@ -80,6 +80,7 @@ def main():
         batch_seqs = []
         batch_orgs = []
         batch_ids = []
+        batch_hls = []
         for idx, row in df.iterrows():
             interval = genome.Interval(
                 chromosome=row['chromosome'],
@@ -93,6 +94,7 @@ def main():
                 batch_seqs.append(seq_one_hot)
                 batch_orgs.append(0)  # HOMO_SAPIENS
                 batch_ids.append(row['ensembl_transcript_id'])
+                batch_hls.append(float(row['half_life']))
             except Exception as e:
                 print(f"WARNUNG: Fehler beim Extrahieren der Sequenz an Index {idx} (Transcript ID: {row.get('ensembl_transcript_id', 'Unbekannt')}): {e}")
                 continue
@@ -102,29 +104,33 @@ def main():
                     dna_sequence=np.array(batch_seqs),
                     organism_index=np.array(batch_orgs),
                     rna_half_life=np.zeros(args.batch_size, dtype=np.float32)
-                ), batch_ids
+                ), batch_ids, batch_hls
                 batch_seqs = []
                 batch_orgs = []
                 batch_ids = []
+                batch_hls = []
                 
         if batch_seqs:
             yield schemas.DataBatch(
                 dna_sequence=np.array(batch_seqs),
                 organism_index=np.array(batch_orgs),
                 rna_half_life=np.zeros(len(batch_seqs), dtype=np.float32)
-            ), batch_ids
+            ), batch_ids, batch_hls
 
     all_embeddings = []
     all_ids = []
+    all_hls = []
     print("Extrahiere Embeddings...")
     num_batches = (num_samples + args.batch_size - 1) // args.batch_size
-    for batch, batch_ids in tqdm(get_batches(), total=num_batches):
+    for batch, batch_ids, batch_hls in tqdm(get_batches(), total=num_batches):
         emb = embed_step(pretrained_params, pretrained_state, batch)
         all_embeddings.append(np.array(emb))
         all_ids.extend(batch_ids)
+        all_hls.extend(batch_hls)
         
     all_embeddings = np.concatenate(all_embeddings, axis=0)
     all_ids = np.array(all_ids)
+    all_hls = np.array(all_hls, dtype=np.float32)
     print(f"Insgesamt {all_embeddings.shape[0]} Embeddings der Form {all_embeddings.shape[1:]} extrahiert.")
     
     # Falls output_path auf .npy endet, ändern wir es zu .npz
@@ -138,21 +144,24 @@ def main():
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    np.savez(output_path, embeddings=all_embeddings, ensembl_transcript_ids=all_ids)
-    print(f"Embeddings und ensembl_transcript_ids erfolgreich unter {output_path} gespeichert.")
+    np.savez(output_path, embeddings=all_embeddings, ensembl_transcript_ids=all_ids, half_lives=all_hls)
+    print(f"Embeddings, ensembl_transcript_ids und half_lives erfolgreich unter {output_path} gespeichert.")
 
 
 def load_embeddings():
     data = np.load("/beegfs/prj/RNA_NLP/AlphaGenome/embeddings/embeddings.npz")
     embeddings = data["embeddings"]
     transcript_ids = data["ensembl_transcript_ids"]
+    half_lives = data["half_lives"]
 
     print("Embeddings Shape:", embeddings.shape)
     print("Transcript IDs Shape:", transcript_ids.shape)
+    print("Half Lives Shape:", half_lives.shape)
 
     print(transcript_ids[0])
+    print(half_lives[0])
     print(embeddings[0])
 
 if __name__ == "__main__":
     main()
-    # load_embeddings()
+    load_embeddings()
