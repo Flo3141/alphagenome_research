@@ -25,9 +25,6 @@ def get_embeddings_forward_fn(output_metadata, jmp_policy='params=float32,comput
             alpha_genome_model = model.AlphaGenome(
                 output_metadata, freeze_trunk_embeddings=True
             )
-            # RNA Half-Life Head initialisieren, damit die Parameter-Struktur mit
-            # dem Checkpoint übereinstimmt.
-            alpha_genome_model.enable_rna_half_life_head()
             
             # AlphaGenome.__call__ liefert (predictions, embeddings)
             predictions, embeddings = alpha_genome_model(
