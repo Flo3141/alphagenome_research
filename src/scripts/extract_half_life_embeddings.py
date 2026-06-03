@@ -141,5 +141,18 @@ def main():
     np.savez(output_path, embeddings=all_embeddings, ensembl_transcript_ids=all_ids)
     print(f"Embeddings und ensembl_transcript_ids erfolgreich unter {output_path} gespeichert.")
 
+
+def load_embeddings():
+    data = np.load("/beegfs/prj/RNA_NLP/AlphaGenome/embeddings/embeddings.npz")
+    embeddings = data["embeddings"]
+    transcript_ids = data["ensembl_transcript_ids"]
+
+    print("Embeddings Shape:", embeddings.shape)
+    print("Transcript IDs Shape:", transcript_ids.shape)
+
+    print(transcript_ids[0])
+    print(embeddings[0])
+
 if __name__ == "__main__":
-    main()
+    #main()
+    load_embeddings()
