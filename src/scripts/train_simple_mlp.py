@@ -281,10 +281,10 @@ def run_final_test_evaluation(
         res_text += f"  Pearson: {fold_pearsons[i]}\n"
         res_text += f"  Spearman: {fold_spearmans[i]}\n"
     
-    res_text += f"\nMean Metrics (across 5 folds):\n"
-    res_text += f"  MSE: {mean_mse} (std: {std_mse})\n"
-    res_text += f"  Pearson: {mean_pearson} (std: {std_pearson})\n"
-    res_text += f"  Spearman: {mean_spearman} (std: {std_spearman})\n"
+    res_text += f"\nMean +- std (across 5 folds):\n"
+    res_text += f"  MSE: {mean_mse} +- {std_mse}\n"
+    res_text += f"  Pearson: {mean_pearson} +- {std_pearson}\n"
+    res_text += f"  Spearman: {mean_spearman} +- {std_spearman}\n"
 
     print(res_text)
 
