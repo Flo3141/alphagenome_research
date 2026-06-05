@@ -228,8 +228,11 @@ def run_final_test_evaluation(
     # Load test set
     X_test, _, y_test = load_embeddings(test_path)
 
-    # Accumulate predictions across all 5 folds
+    # Accumulate predictions and compute individual metrics for all 5 folds
     all_preds = []
+    fold_mses = []
+    fold_pearsons = []
+    fold_spearmans = []
 
     for fold_idx in range(5):
         fold_num = fold_idx + 1
@@ -252,20 +255,53 @@ def run_final_test_evaluation(
         y_pred_fold = model.predict(X_test_fold)
         all_preds.append(y_pred_fold)
 
-    # Average predictions of the 5 models
+        # Calculate fold-specific metrics
+        mse_f = np.mean((y_pred_fold - y_test) ** 2)
+        df_f = pd.DataFrame({"prediction": y_pred_fold, "label": y_test})
+        pearson_f = df_f.corr(method='pearson').iloc[0, 1]
+        spearman_f = df_f.corr(method='spearman').iloc[0, 1]
+
+        fold_mses.append(mse_f)
+        fold_pearsons.append(pearson_f)
+        fold_spearmans.append(spearman_f)
+
+    # Average predictions of the 5 models (ensemble prediction)
     y_pred_ensemble = np.mean(all_preds, axis=0)
 
-    # Metrics
-    mse = mean_squared_error(y_test, y_pred_ensemble)
-    mae = mean_absolute_error(y_test, y_pred_ensemble)
-    r2 = r2_score(y_test, y_pred_ensemble)
+    # Calculate statistics across folds
+    mean_mse, std_mse = np.mean(fold_mses), np.std(fold_mses)
+    mean_pearson, std_pearson = np.mean(fold_pearsons), np.std(fold_pearsons)
+    mean_spearman, std_spearman = np.mean(fold_spearmans), np.std(fold_spearmans)
 
-    print(f"\n==========================================")
-    print(f"FINAL TEST SET RESULTS (5-Fold Ensemble):")
-    print(f"  MSE: {mse:.4f}")
-    print(f"  MAE: {mae:.4f}")
-    print(f"  R^2: {r2:.4f}")
-    print(f"==========================================")
+    # Generate results report text
+    res_text = f"----- MLP Evaluation -----\n"
+    for i in range(5):
+        res_text += f"Fold {i+1}:\n"
+        res_text += f"  MSE: {fold_mses[i]}\n"
+        res_text += f"  Pearson: {fold_pearsons[i]}\n"
+        res_text += f"  Spearman: {fold_spearmans[i]}\n"
+    
+    res_text += f"\nMean Metrics (across 5 folds):\n"
+    res_text += f"  MSE: {mean_mse} (std: {std_mse})\n"
+    res_text += f"  Pearson: {mean_pearson} (std: {std_pearson})\n"
+    res_text += f"  Spearman: {mean_spearman} (std: {std_spearman})\n"
+
+    print(res_text)
+
+    # Save report to mlp_results.txt
+    results_path = os.path.join(best_config_dir, "mlp_results.txt")
+    with open(results_path, "w") as f:
+        f.write(res_text)
+    print(f"Saved evaluation results to: {results_path}")
+
+    # Save test predictions CSV (ensemble predictions)
+    df_out = pd.DataFrame({
+        "label": y_test,
+        "prediction": y_pred_ensemble
+    })
+    out_csv_path = os.path.join(best_config_dir, "test_predictions.csv")
+    df_out.to_csv(out_csv_path, index=False)
+    print(f"Saved ensemble test predictions to: {out_csv_path}")
 
 def run_training_experiment(
     train_val_path="/beegfs/prj/RNA_NLP/AlphaGenome/embeddings/embeddings_train_val.npz",
@@ -321,6 +357,11 @@ def main():
         help="Train the simple MLP on the train_val embeddings using 5-fold CV and evaluate on the test set."
     )
     parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run final test evaluation on the test set using already trained models."
+    )
+    parser.add_argument(
         "--embeddings_path",
         type=str,
         default="/beegfs/prj/RNA_NLP/AlphaGenome/embeddings/embeddings_train_val.npz",
@@ -347,6 +388,28 @@ def main():
             train_val_path=args.embeddings_path,
             test_path=args.test_path,
             output_dir=args.output_dir
+        )
+    elif args.test:
+        with_norm_dir = os.path.join(args.output_dir, "with_normalization")
+        without_norm_dir = os.path.join(args.output_dir, "without_normalization")
+        
+        has_with = os.path.exists(with_norm_dir) and any(f.endswith(".pkl") for f in os.listdir(with_norm_dir))
+        has_without = os.path.exists(without_norm_dir) and any(f.endswith(".pkl") for f in os.listdir(without_norm_dir))
+        
+        if has_with and has_without:
+            print("Found checkpoints for both normalized and raw embeddings. Evaluating using normalized models by default.")
+            best_config_dir = with_norm_dir
+        elif has_with:
+            best_config_dir = with_norm_dir
+        elif has_without:
+            best_config_dir = without_norm_dir
+        else:
+            print(f"Error: No trained models/checkpoints found in {args.output_dir}")
+            return
+            
+        run_final_test_evaluation(
+            test_path=args.test_path,
+            best_config_dir=best_config_dir
         )
     else:
         # If neither flag is set, check if train_val split exists, and run training.
