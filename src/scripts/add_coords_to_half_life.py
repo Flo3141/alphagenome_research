@@ -3,14 +3,19 @@ import pandas as pd
 import gffutils
 import sys
 
+def create_half_life_csv():
+    df = pd.read_csv("/beegfs/prj/RNA_NLP/RNA_half_lives/SalukiStyle_splits_sequence_transcript-estimates-annotated-pulseRTc-0-1-2-4-6-8-16_hIPSC_CM.txt", sep="\t", header=None)
+    df.columns = ["data_split","ensembl_transcript_id","ensembl_gene_id","entrezgene_id","hgnc_symbol","transcript_biotype","rate","half_life","rate.min","rate.max","sequence"]
+    half_life_df = df[["ensembl_transcript_id","half_life","rate","rate.min","rate.max"]]
+    half_life_df.set_index("ensembl_transcript_id", inplace=True)
+    half_life_df.to_csv(os.path.join(AG_DATA_FOLDER, "half_life.csv"), sep=",")
+
 def main():
     # Get the data folder from environment variable or use current directory
-    data_folder = os.environ.get("DATA_FOLDER", ".")
-    ag_data_folder = os.environ.get("AG_DATA_FOLDER", ".")
     
-    db_path = os.path.join(data_folder, "sorted.gtf.db")
-    csv_path = os.path.join(data_folder, "half_life.csv")
-    output_path = os.path.join(ag_data_folder, "half_life_with_coords.csv")
+    db_path = os.path.join(AG_DATA_FOLDER, "Homo_sapiens.GRCh38.115.gtf.db")
+    csv_path = os.path.join(AG_DATA_FOLDER, "half_life.csv")
+    output_path = os.path.join(AG_DATA_FOLDER, "half_life_with_coords.csv")
 
     if not os.path.exists(db_path):
         print(f"Error: GTF database not found at {db_path}")
@@ -69,4 +74,6 @@ def main():
     print("Done!")
 
 if __name__ == "__main__":
+    AG_DATA_FOLDER = os.environ.get("AG_DATA_FOLDER", ".")
+    create_half_life_csv()
     main()
