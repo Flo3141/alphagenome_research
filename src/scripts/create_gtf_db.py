@@ -4,10 +4,10 @@ import os
 if __name__ == "__main__":
     # Muss nur einmal ausgeführt werden
     print("Erstelle GFF-Datenbank (kann dauern)...")
-    DATA_FOLDER = os.environ.get("DATA_FOLDER")
+    ag_data_folder = os.environ.get("AG_DATA_FOLDER", ".")
     db = gffutils.create_db(
         "/beegfs/prj/RNA_NLP/AlphaGenome/data/Homo_sapiens.GRCh38.115.gtf",
-        dbfn=os.path.join(DATA_FOLDER, "Homo_sapiens.GRCh38.115.gtf.db"),
+        dbfn=os.path.join(ag_data_folder, "Homo_sapiens.GRCh38.115.gtf.db"),
         force=True,
         keep_order=True,
         merge_strategy='merge',
