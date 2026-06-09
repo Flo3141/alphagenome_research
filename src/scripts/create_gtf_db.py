@@ -1,0 +1,21 @@
+import gffutils
+import os
+
+if __name__ == "__main__":
+    # Muss nur einmal ausgeführt werden
+    print("Erstelle GFF-Datenbank (kann dauern)...")
+    DATA_FOLDER = os.environ.get("DATA_FOLDER")
+    db = gffutils.create_db(
+        "/beegfs/prj/RNA_NLP/AlphaGenome/data/Homo_sapiens.GRCh38.115.gtf",
+        dbfn=os.path.join(DATA_FOLDER, "Homo_sapiens.GRCh38.115.gtf.db"),
+        force=True,
+        keep_order=True,
+        merge_strategy='merge',
+        sort_attribute_values=True,
+        disable_infer_genes=True,
+        disable_infer_transcripts=True
+    )
+    print("Datenbank erstellt.")
+
+    # Datenbank laden (für spätere Skripte)
+    # db = gffutils.FeatureDB('annotations.db')
