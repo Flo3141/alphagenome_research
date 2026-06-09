@@ -13,7 +13,7 @@ def create_half_life_csv():
 def main():
     # Get the data folder from environment variable or use current directory
     
-    db_path = os.path.join(AG_DATA_FOLDER, "Homo_sapiens.GRCh38.115.gtf.db")
+    db_path = os.path.join(AG_DATA_FOLDER, "Homo_sapiens.GRCh38.108.gtf.db")
     csv_path = os.path.join(AG_DATA_FOLDER, "half_life.csv")
     output_path = os.path.join(AG_DATA_FOLDER, "half_life_with_coords.csv")
 
