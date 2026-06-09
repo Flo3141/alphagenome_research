@@ -7,7 +7,7 @@ if __name__ == "__main__":
 
     model = dna_model.create("/beegfs/prj/RNA_NLP/AlphaGenome/weights/alphagenome/all_folds/1")
 
-    interval = genome.Interval(chromosome='chr22', start=35677410, end=36725986)
+    interval = genome.Interval(chromosome='chr22', start=35677410, end=36725986, strand='-')
     variant = genome.Variant(
         chromosome='chr22',
         position=36201698,
