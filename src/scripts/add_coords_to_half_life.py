@@ -48,14 +48,16 @@ def main():
             coords.append({
                 'chromosome': "chr" + str(feature.seqid),
                 'start': feature.start,
-                'end': feature.end
+                'end': feature.end,
+                'strand': feature.strand
             })
         except gffutils.exceptions.FeatureNotFoundError:
             print(f"Warning: Transcript {tx_id_base} not found in database.", file=sys.stderr)
             coords.append({
                 'chromosome': None,
                 'start': None,
-                'end': None
+                'end': None,
+                'strand': None
             })
 
     # Convert coordinates to DataFrame and join

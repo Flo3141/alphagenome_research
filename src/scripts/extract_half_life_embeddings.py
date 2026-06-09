@@ -86,6 +86,7 @@ def main():
                 chromosome=row['chromosome'],
                 start=int(row['start']),
                 end=int(row['end']),
+                strand=row.get('strand', '.'),
             )
             interval = interval.resize(sequence_length)
             try:
