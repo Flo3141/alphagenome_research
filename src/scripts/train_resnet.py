@@ -283,10 +283,12 @@ def train_resnet_cv(
             val_x_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
             y_pred = model(val_x_tensor).cpu().numpy()
 
-        # Metrics
-        mse = mean_squared_error(y_val, y_pred)
-        mae = mean_absolute_error(y_val, y_pred)
-        r2 = r2_score(y_val, y_pred)
+        # Metrics (expm1 to evaluate in original scale)
+        y_val_orig = np.expm1(y_val)
+        y_pred_orig = np.expm1(y_pred)
+        mse = mean_squared_error(y_val_orig, y_pred_orig)
+        mae = mean_absolute_error(y_val_orig, y_pred_orig)
+        r2 = r2_score(y_val_orig, y_pred_orig)
 
         print(f"Fold {fold_num} results: MAE = {mae:.4f}, MSE = {mse:.4f}, R^2 = {r2:.4f}")
         fold_maes.append(mae)
@@ -395,9 +397,11 @@ def run_final_test_evaluation(
         
         all_preds.append(y_pred_fold)
 
-        # Calculate fold-specific metrics
-        mse_f = np.mean((y_pred_fold - y_test) ** 2)
-        df_f = pd.DataFrame({"prediction": y_pred_fold, "label": y_test})
+        # Calculate fold-specific metrics in original scale (expm1)
+        y_pred_fold_orig = np.expm1(y_pred_fold)
+        y_test_orig = np.expm1(y_test)
+        mse_f = np.mean((y_pred_fold_orig - y_test_orig) ** 2)
+        df_f = pd.DataFrame({"prediction": y_pred_fold_orig, "label": y_test_orig})
         pearson_f = df_f.corr(method='pearson').iloc[0, 1]
         spearman_f = df_f.corr(method='spearman').iloc[0, 1]
 
@@ -434,10 +438,12 @@ def run_final_test_evaluation(
         f.write(res_text)
     print(f"Saved evaluation results to: {results_path}")
 
-    # Save test predictions CSV (ensemble predictions)
+    # Save test predictions CSV (ensemble predictions in original scale)
+    y_test_orig = np.expm1(y_test)
+    y_pred_ensemble_orig = np.expm1(y_pred_ensemble)
     df_out = pd.DataFrame({
-        "label": y_test,
-        "prediction": y_pred_ensemble
+        "label": y_test_orig,
+        "prediction": y_pred_ensemble_orig
     })
     out_csv_path = os.path.join(best_config_dir, "test_predictions.csv")
     df_out.to_csv(out_csv_path, index=False)
