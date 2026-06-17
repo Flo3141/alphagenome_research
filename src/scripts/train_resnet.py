@@ -17,8 +17,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Define ResNet MLP Module
 class ResNetMLP(nn.Module):
-    def __init__(self, input_dim=3072, hidden_dim=512, dropout_rate=0.2):
+    def __init__(self, input_dim=3072, hidden_dim=512, dropout_rate=0.2, noise_level=0.0):
         super().__init__()
+        self.noise_level = noise_level
         self.input_layer = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -41,6 +42,8 @@ class ResNetMLP(nn.Module):
         self.output_layer = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
+        if self.training and self.noise_level > 0.0:
+            x = x + torch.randn_like(x) * self.noise_level
         h = self.input_layer(x)
         h = h + self.res_block(h)
         return self.output_layer(h).squeeze(-1)
@@ -121,6 +124,8 @@ def train_resnet_cv(
     weight_decay=1e-4,
     hidden_dim=512,
     dropout=0.2,
+    noise_level=0.0,
+    patience=10,
     loss_type="mse",
     random_state=42,
     dry_run=False
@@ -182,7 +187,7 @@ def train_resnet_cv(
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         
         # Instantiate PyTorch model
-        model = ResNetMLP(input_dim=embeddings.shape[1], hidden_dim=hidden_dim, dropout_rate=dropout).to(device)
+        model = ResNetMLP(input_dim=embeddings.shape[1], hidden_dim=hidden_dim, dropout_rate=dropout, noise_level=noise_level).to(device)
         
         # Optimizer & Loss Function
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -196,6 +201,7 @@ def train_resnet_cv(
 
         best_val_loss = float('inf')
         best_model_state = None
+        patience_counter = 0
         loss_curve = []
         val_loss_curve = []
 
@@ -231,9 +237,16 @@ def train_resnet_cv(
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
 
             if (epoch + 1) % max(1, epochs // 10) == 0 or epoch == epochs - 1:
                 print(f"  Epoch {epoch+1:03d}/{epochs:03d} | Train Loss: {epoch_loss:.5f} | Val Loss: {val_loss:.5f}")
+
+            if patience_counter >= patience:
+                print(f"  Early stopping triggered at epoch {epoch+1} (no improvement for {patience} epochs).")
+                break
 
         # Load the best weights back
         model.load_state_dict(best_model_state)
@@ -249,6 +262,8 @@ def train_resnet_cv(
             "hidden_dim": hidden_dim,
             "dropout": dropout,
             "weight_decay": weight_decay,
+            "noise_level": noise_level,
+            "patience": patience,
             "input_dim": embeddings.shape[1]
         }
         with open(checkpoint_path, 'wb') as f:
@@ -377,6 +392,7 @@ def run_final_test_evaluation(
         hidden_dim = checkpoint["hidden_dim"]
         dropout = checkpoint["dropout"]
         input_dim = checkpoint["input_dim"]
+        noise_level = checkpoint.get("noise_level", 0.0)
 
         # Apply fold scaler if present
         if scaler is not None:
@@ -385,7 +401,7 @@ def run_final_test_evaluation(
             X_test_fold = X_test
 
         # Reconstruct PyTorch Model
-        model = ResNetMLP(input_dim=input_dim, hidden_dim=hidden_dim, dropout_rate=dropout)
+        model = ResNetMLP(input_dim=input_dim, hidden_dim=hidden_dim, dropout_rate=dropout, noise_level=noise_level)
         model.load_state_dict(state_dict)
         model.to(device)
         model.eval()
@@ -459,6 +475,8 @@ def run_training_experiment(
     weight_decay=1e-4,
     hidden_dim=512,
     dropout=0.2,
+    noise_level=0.0,
+    patience=10,
     loss_type="mse",
     dry_run=False
 ):
@@ -472,6 +490,8 @@ def run_training_experiment(
         weight_decay=weight_decay,
         hidden_dim=hidden_dim,
         dropout=dropout,
+        noise_level=noise_level,
+        patience=patience,
         loss_type=loss_type,
         dry_run=dry_run
     )
@@ -562,6 +582,18 @@ def main():
         help="Loss function type to use for training."
     )
     parser.add_argument(
+        "--patience",
+        type=int,
+        default=10,
+        help="Patience (epochs) for early stopping."
+    )
+    parser.add_argument(
+        "--noise",
+        type=float,
+        default=0.0,
+        help="Standard deviation of Gaussian noise added to inputs during training."
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run a dry run with synthetic data to test the pipeline end-to-end."
@@ -583,6 +615,8 @@ def main():
             weight_decay=args.weight_decay,
             hidden_dim=args.hidden_dim,
             dropout=args.dropout,
+            noise_level=args.noise,
+            patience=args.patience,
             loss_type=args.loss,
             dry_run=args.dry_run
         )
