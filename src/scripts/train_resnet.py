@@ -118,6 +118,7 @@ def train_resnet_cv(
     epochs=100,
     batch_size=64,
     lr=1e-3,
+    weight_decay=1e-4,
     hidden_dim=512,
     dropout=0.2,
     loss_type="mse",
@@ -136,9 +137,13 @@ def train_resnet_cv(
     if dry_run:
         print("Running in DRY-RUN mode. Generating synthetic data...")
         embeddings = np.random.randn(100, 3072).astype(np.float32)
-        half_lives = np.random.randn(100).astype(np.float32)
+        half_lives = (np.abs(np.random.randn(100)) * 10).astype(np.float32)
     else:
         embeddings, _, half_lives = load_embeddings(embeddings_path)
+
+    # Log transform targets (log1p)
+    print("Applying log1p transformation to target half-lives...")
+    half_lives = np.log1p(half_lives)
 
     # Bin the targets to stratify continuous target values
     print("Binning targets for stratification...")
@@ -180,7 +185,7 @@ def train_resnet_cv(
         model = ResNetMLP(input_dim=embeddings.shape[1], hidden_dim=hidden_dim, dropout_rate=dropout).to(device)
         
         # Optimizer & Loss Function
-        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         
         if loss_type == "huber":
             criterion = nn.HuberLoss(delta=1.0)
@@ -243,6 +248,7 @@ def train_resnet_cv(
             "val_loss_curve": val_loss_curve,
             "hidden_dim": hidden_dim,
             "dropout": dropout,
+            "weight_decay": weight_decay,
             "input_dim": embeddings.shape[1]
         }
         with open(checkpoint_path, 'wb') as f:
@@ -344,9 +350,12 @@ def run_final_test_evaluation(
     if dry_run:
         print("Running in DRY-RUN mode. Generating synthetic test data...")
         X_test = np.random.randn(20, 3072).astype(np.float32)
-        y_test = np.random.randn(20).astype(np.float32)
+        y_test = (np.abs(np.random.randn(20)) * 10).astype(np.float32)
     else:
         X_test, _, y_test = load_embeddings(test_path)
+
+    # Log transform test targets (log1p)
+    y_test = np.log1p(y_test)
 
     all_preds = []
     fold_mses = []
@@ -441,6 +450,7 @@ def run_training_experiment(
     epochs=100,
     batch_size=64,
     lr=1e-3,
+    weight_decay=1e-4,
     hidden_dim=512,
     dropout=0.2,
     loss_type="mse",
@@ -453,6 +463,7 @@ def run_training_experiment(
         epochs=epochs,
         batch_size=batch_size,
         lr=lr,
+        weight_decay=weight_decay,
         hidden_dim=hidden_dim,
         dropout=dropout,
         loss_type=loss_type,
@@ -520,6 +531,12 @@ def main():
         help="Learning rate for AdamW optimizer."
     )
     parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=1e-4,
+        help="Weight decay (L2 penalty) for AdamW optimizer."
+    )
+    parser.add_argument(
         "--hidden_dim",
         type=int,
         default=512,
@@ -557,6 +574,7 @@ def main():
             epochs=epochs,
             batch_size=args.batch_size,
             lr=args.lr,
+            weight_decay=args.weight_decay,
             hidden_dim=args.hidden_dim,
             dropout=args.dropout,
             loss_type=args.loss,
