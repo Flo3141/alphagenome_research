@@ -43,7 +43,9 @@ class ResNetMLP(nn.Module):
 
     def forward(self, x):
         if self.training and self.noise_level > 0.0:
-            x = x + torch.randn_like(x) * self.noise_level
+            data_std = x.std()
+            noise_std = data_std * self.noise_level
+            x = x + torch.randn_like(x) * noise_std
         h = self.input_layer(x)
         h = h + self.res_block(h)
         return self.output_layer(h).squeeze(-1)
@@ -591,7 +593,7 @@ def main():
         "--noise",
         type=float,
         default=0.0,
-        help="Standard deviation of Gaussian noise added to inputs during training."
+        help="Percentage of the standard deviation of Gaussian noise added to inputs during training (0.02 --> 2% of the std of the data)."
     )
     parser.add_argument(
         "--dry-run",
