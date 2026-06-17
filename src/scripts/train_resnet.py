@@ -115,7 +115,6 @@ def split_embeddings():
 def train_resnet_cv(
     embeddings_path,
     output_dir,
-    normalize_embeddings=True,
     epochs=100,
     batch_size=64,
     lr=1e-3,
@@ -125,15 +124,12 @@ def train_resnet_cv(
     random_state=42,
     dry_run=False
 ):
-    # Determine the directory for this configuration
-    config_name = "with_normalization" if normalize_embeddings else "without_normalization"
-    fold_output_dir = os.path.join(output_dir, config_name)
-    os.makedirs(fold_output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     print(f"\n==========================================")
-    print(f"Starting 5-Fold CV ResNet MLP (Normalized: {normalize_embeddings})")
+    print(f"Starting 5-Fold CV ResNet MLP (Always Normalized)")
     print(f"Using Device: {device}")
-    print(f"Saving checkpoints to: {fold_output_dir}")
+    print(f"Saving checkpoints to: {output_dir}")
     print(f"==========================================")
 
     # Load embeddings and half_lives
@@ -155,6 +151,7 @@ def train_resnet_cv(
     fold_mses = []
     fold_r2s = []
     all_loss_curves = []
+    all_val_loss_curves = []
 
     for fold, (train_idx, val_idx) in enumerate(skf.split(embeddings, half_life_bins)):
         fold_num = fold + 1
@@ -162,12 +159,10 @@ def train_resnet_cv(
         X_train, X_val = embeddings[train_idx], embeddings[val_idx]
         y_train, y_val = half_lives[train_idx], half_lives[val_idx]
 
-        # Normalize features if flag is set
-        scaler = None
-        if normalize_embeddings:
-            scaler = StandardScaler()
-            X_train = scaler.fit_transform(X_train)
-            X_val = scaler.transform(X_val)
+        # Always normalize features
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val = scaler.transform(X_val)
 
         # Convert to PyTorch datasets
         train_dataset = TensorDataset(
@@ -197,6 +192,7 @@ def train_resnet_cv(
         best_val_loss = float('inf')
         best_model_state = None
         loss_curve = []
+        val_loss_curve = []
 
         print(f"Training ResNet MLP on {len(X_train)} samples for {epochs} epochs...")
         for epoch in range(epochs):
@@ -224,6 +220,7 @@ def train_resnet_cv(
                 val_predictions = model(val_x_tensor)
                 val_loss = criterion(val_predictions, val_y_tensor).item()
             
+            val_loss_curve.append(val_loss)
             scheduler.step(val_loss)
 
             if val_loss < best_val_loss:
@@ -238,11 +235,12 @@ def train_resnet_cv(
         model.to(device)
 
         # Save the fold checkpoint
-        checkpoint_path = os.path.join(fold_output_dir, f"resnet_model_fold_{fold_num}.pkl")
+        checkpoint_path = os.path.join(output_dir, f"resnet_model_fold_{fold_num}.pkl")
         checkpoint_data = {
             "state_dict": best_model_state,
             "scaler": scaler,
             "loss_curve": loss_curve,
+            "val_loss_curve": val_loss_curve,
             "hidden_dim": hidden_dim,
             "dropout": dropout,
             "input_dim": embeddings.shape[1]
@@ -259,13 +257,14 @@ def train_resnet_cv(
             
             plt.figure(figsize=(8, 5))
             plt.plot(range(1, len(loss_curve) + 1), loss_curve, label='Training Loss', color='royalblue', linewidth=2)
-            plt.title(f'ResNet Training Loss Curve - Fold {fold_num} (Normalized: {normalize_embeddings})')
+            plt.plot(range(1, len(val_loss_curve) + 1), val_loss_curve, label='Validation Loss', color='darkorange', linewidth=2)
+            plt.title(f'ResNet Training & Validation Loss - Fold {fold_num} (Always Normalized)')
             plt.xlabel('Epoch')
             plt.ylabel(f'Loss ({loss_type.upper()})')
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
             
-            plot_path = os.path.join(fold_output_dir, f"loss_curve_fold_{fold_num}.png")
+            plot_path = os.path.join(output_dir, f"loss_curve_fold_{fold_num}.png")
             plt.savefig(plot_path, dpi=150)
             plt.close()
             print(f"Saved fold loss curve plot to: {plot_path}")
@@ -288,21 +287,29 @@ def train_resnet_cv(
         fold_mses.append(mse)
         fold_r2s.append(r2)
         all_loss_curves.append(loss_curve)
+        all_val_loss_curves.append(val_loss_curve)
 
     # Save aggregated loss curves as CSV
     try:
         loss_data = {}
-        max_len = max(len(curve) for curve in all_loss_curves)
-        for fold_idx, curve in enumerate(all_loss_curves):
-            padded = curve + [np.nan] * (max_len - len(curve))
-            loss_data[f"fold_{fold_idx+1}"] = padded
+        max_len = max(max(len(c) for c in all_loss_curves), max(len(c) for c in all_val_loss_curves))
+        for fold_idx in range(5):
+            train_curve = all_loss_curves[fold_idx]
+            val_curve = all_val_loss_curves[fold_idx]
+            padded_train = train_curve + [np.nan] * (max_len - len(train_curve))
+            padded_val = val_curve + [np.nan] * (max_len - len(val_curve))
+            loss_data[f"fold_{fold_idx+1}_train"] = padded_train
+            loss_data[f"fold_{fold_idx+1}_val"] = padded_val
         loss_data["epoch"] = list(range(1, max_len + 1))
         
         df_loss = pd.DataFrame(loss_data)
-        cols = ['epoch'] + [f"fold_{i+1}" for i in range(5)]
+        cols = ['epoch']
+        for i in range(5):
+            cols.append(f"fold_{i+1}_train")
+            cols.append(f"fold_{i+1}_val")
         df_loss = df_loss[cols]
         
-        loss_csv_path = os.path.join(fold_output_dir, "loss_curves.csv")
+        loss_csv_path = os.path.join(output_dir, "loss_curves.csv")
         df_loss.to_csv(loss_csv_path, index=False)
         print(f"Saved aggregated loss curves data to: {loss_csv_path}")
     except Exception as e:
@@ -313,7 +320,7 @@ def train_resnet_cv(
     avg_mse = np.mean(fold_mses)
     avg_r2 = np.mean(fold_r2s)
 
-    print(f"\nSummary for Normalized={normalize_embeddings}:")
+    print(f"\nSummary (Always Normalized):")
     print(f"  Avg MAE: {avg_mae:.4f}")
     print(f"  Avg MSE: {avg_mse:.4f}")
     print(f"  Avg R^2: {avg_r2:.4f}")
@@ -439,11 +446,10 @@ def run_training_experiment(
     loss_type="mse",
     dry_run=False
 ):
-    # Run CV with normalization (saves fold checkpoints under output_dir/with_normalization)
-    metrics_norm = train_resnet_cv(
+    # Run CV (saves fold checkpoints directly under output_dir)
+    train_resnet_cv(
         embeddings_path=train_val_path,
         output_dir=output_dir,
-        normalize_embeddings=True,
         epochs=epochs,
         batch_size=batch_size,
         lr=lr,
@@ -453,40 +459,10 @@ def run_training_experiment(
         dry_run=dry_run
     )
     
-    # Run CV without normalization (saves fold checkpoints under output_dir/without_normalization)
-    metrics_raw = train_resnet_cv(
-        embeddings_path=train_val_path,
-        output_dir=output_dir,
-        normalize_embeddings=False,
-        epochs=epochs,
-        batch_size=batch_size,
-        lr=lr,
-        hidden_dim=hidden_dim,
-        dropout=dropout,
-        loss_type=loss_type,
-        dry_run=dry_run
-    )
-    
-    # Compare
-    print("\n" + "="*50)
-    print(" COMPARISON: RESNET MLP ON ALPHAGENOME EMBEDDINGS (5-Fold CV)")
-    print("="*50)
-    print(f"Metric      | With Normalization | Without Normalization")
-    print(f"------------|--------------------|----------------------")
-    print(f"Avg MAE     | {metrics_norm['mae']:.5f}            | {metrics_raw['mae']:.5f}")
-    print(f"Avg MSE     | {metrics_norm['mse']:.5f}            | {metrics_raw['mse']:.5f}")
-    print(f"Avg R^2     | {metrics_norm['r2']:.5f}            | {metrics_raw['r2']:.5f}")
-    print("="*50)
-
-    # Determine best configuration based on Avg MAE
-    best_config = "with_normalization" if metrics_norm['mae'] < metrics_raw['mae'] else "without_normalization"
-    best_config_dir = os.path.join(output_dir, best_config)
-    print(f"\nBest configuration selected based on CV MAE: {best_config}")
-
     # Run final test set evaluation using the loaded ensemble models
     run_final_test_evaluation(
         test_path=test_path,
-        best_config_dir=best_config_dir,
+        best_config_dir=output_dir,
         dry_run=dry_run
     )
 
@@ -587,22 +563,19 @@ def main():
             dry_run=args.dry_run
         )
     elif args.test:
-        with_norm_dir = os.path.join(args.output_dir, "with_normalization")
-        without_norm_dir = os.path.join(args.output_dir, "without_normalization")
+        # Check if checkpoints exist directly in the output directory
+        has_checkpoints = os.path.exists(args.output_dir) and any(f.endswith(".pkl") for f in os.listdir(args.output_dir))
         
-        has_with = os.path.exists(with_norm_dir) and any(f.endswith(".pkl") for f in os.listdir(with_norm_dir))
-        has_without = os.path.exists(without_norm_dir) and any(f.endswith(".pkl") for f in os.listdir(without_norm_dir))
-        
-        if has_with and has_without:
-            print("Found checkpoints for both normalized and raw embeddings. Evaluating using normalized models by default.")
-            best_config_dir = with_norm_dir
-        elif has_with:
-            best_config_dir = with_norm_dir
-        elif has_without:
-            best_config_dir = without_norm_dir
+        if has_checkpoints:
+            best_config_dir = args.output_dir
         else:
-            print(f"Error: No trained models/checkpoints found in {args.output_dir}")
-            return
+            # Fallback check for older "with_normalization" subfolder structure
+            with_norm_dir = os.path.join(args.output_dir, "with_normalization")
+            if os.path.exists(with_norm_dir) and any(f.endswith(".pkl") for f in os.listdir(with_norm_dir)):
+                best_config_dir = with_norm_dir
+            else:
+                print(f"Error: No trained models/checkpoints found in {args.output_dir}")
+                return
             
         run_final_test_evaluation(
             test_path=args.test_path,
