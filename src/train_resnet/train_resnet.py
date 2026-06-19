@@ -1,6 +1,7 @@
 import argparse
 import os
 import pickle
+import json
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
@@ -11,111 +12,29 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+from ResNetMLP import ResNetMLP
+from util import load_embeddings, split_embeddings, save_loss_curves, save_loss_curves_as_csv
+from bayes_opt import BayesianOptimization
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Define ResNet MLP Module
-class ResNetMLP(nn.Module):
-    def __init__(self, input_dim=3072, hidden_dim=512, dropout_rate=0.2, noise_level=0.0):
-        super().__init__()
-        self.noise_level = noise_level
-        self.input_layer = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout_rate)
-        )
+def train_step(model, criterion, optimizer, train_loader, device):
+    model.train()
+    epoch_loss = 0.0
+    for batch_x, batch_y in train_loader:
+        batch_x, batch_y = batch_x.to(device), batch_y.to(device)
         
-        # Residual Block
-        self.res_block = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout_rate)
-        )
+        optimizer.zero_grad()
+        predictions = model(batch_x)
+        loss = criterion(predictions, batch_y)
+        loss.backward()
+        optimizer.step()
         
-        self.output_layer = nn.Linear(hidden_dim, 1)
-
-    def forward(self, x):
-        if self.training and self.noise_level > 0.0:
-            data_std = x.std()
-            noise_std = data_std * self.noise_level
-            x = x + torch.randn_like(x) * noise_std
-        h = self.input_layer(x)
-        h = h + self.res_block(h)
-        return self.output_layer(h).squeeze(-1)
-
-def load_embeddings(embeddings_path):
-    data = np.load(embeddings_path)
-    embeddings = data["embeddings"]
-    transcript_ids = data["ensembl_transcript_ids"]
-    half_lives = data["half_lives"]
-
-    print(f"Loaded embeddings from: {embeddings_path}")
-    print("Embeddings Shape:", embeddings.shape)
-    print("Transcript IDs Shape:", transcript_ids.shape)
-    print("Half Lives Shape:", half_lives.shape)
-
-    if len(transcript_ids) > 0:
-        print("First transcript ID:", transcript_ids[0])
-        print("First half life:", half_lives[0])
-        print("First embedding sample (first 3 values):", embeddings[0][:3])
+        epoch_loss += loss.item() * batch_x.size(0)
     
-    return embeddings, transcript_ids, half_lives
+    return epoch_loss / len(train_loader.dataset)
 
-def split_embeddings():
-    all_embeddings_path="/beegfs/prj/RNA_NLP/AlphaGenome/embeddings/embeddings.npz"
-    test_csv_path="/beegfs/prj/RNA_NLP/AlphaGenome/data/half_life_with_coords_test.csv"
-
-    print(f"Reading test transcript IDs from {test_csv_path}...")
-    test_df = pd.read_csv(test_csv_path)
-    test_ids = set(test_df["ensembl_transcript_id"].dropna().astype(str).unique())
-    print(f"Found {len(test_ids)} unique transcript IDs in test CSV.")
-
-    print(f"Loading original embeddings from {all_embeddings_path}...")
-    data = np.load(all_embeddings_path)
-    embeddings = data["embeddings"]
-    transcript_ids = data["ensembl_transcript_ids"]
-    half_lives = data["half_lives"]
-
-    # Ensure transcript IDs are compared as strings
-    transcript_ids_str = transcript_ids.astype(str)
-
-    # Generate boolean masks
-    test_mask = np.isin(transcript_ids_str, list(test_ids))
-    train_val_mask = ~test_mask
-
-    print(f"Total original samples: {len(transcript_ids)}")
-    print(f"Test set samples: {np.sum(test_mask)}")
-    print(f"Train/Val set samples: {np.sum(train_val_mask)}")
-
-    # Define output file paths in the same directory as embeddings_path
-    base_dir = os.path.dirname(all_embeddings_path)
-    test_output_path = os.path.join(base_dir, "embeddings_test.npz")
-    train_val_output_path = os.path.join(base_dir, "embeddings_train_val.npz")
-
-    # Save test embeddings
-    np.savez(
-        test_output_path,
-        embeddings=embeddings[test_mask],
-        ensembl_transcript_ids=transcript_ids[test_mask],
-        half_lives=half_lives[test_mask]
-    )
-    print(f"Successfully saved test embeddings to {test_output_path}")
-
-    # Save train/val embeddings
-    np.savez(
-        train_val_output_path,
-        embeddings=embeddings[train_val_mask],
-        ensembl_transcript_ids=transcript_ids[train_val_mask],
-        half_lives=half_lives[train_val_mask]
-    )
-    print(f"Successfully saved train/val embeddings to {train_val_output_path}")
 
 def train_resnet_cv(
     embeddings_path,
@@ -130,14 +49,17 @@ def train_resnet_cv(
     patience=10,
     loss_type="mse",
     random_state=42,
-    dry_run=False
+    dry_run=False,
+    save_checkpoints=True
 ):
-    os.makedirs(output_dir, exist_ok=True)
+    if save_checkpoints:
+        os.makedirs(output_dir, exist_ok=True)
 
     print(f"\n==========================================")
     print(f"Starting 5-Fold CV ResNet MLP (Always Normalized)")
     print(f"Using Device: {device}")
-    print(f"Saving checkpoints to: {output_dir}")
+    if save_checkpoints:
+        print(f"Saving checkpoints to: {output_dir}")
     print(f"==========================================")
 
     # Load embeddings and half_lives
@@ -162,6 +84,7 @@ def train_resnet_cv(
     fold_maes = []
     fold_mses = []
     fold_r2s = []
+    fold_pearsons = []
     all_loss_curves = []
     all_val_loss_curves = []
 
@@ -209,20 +132,7 @@ def train_resnet_cv(
 
         print(f"Training ResNet MLP on {len(X_train)} samples for {epochs} epochs...")
         for epoch in range(epochs):
-            model.train()
-            epoch_loss = 0.0
-            for batch_x, batch_y in train_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                
-                optimizer.zero_grad()
-                predictions = model(batch_x)
-                loss = criterion(predictions, batch_y)
-                loss.backward()
-                optimizer.step()
-                
-                epoch_loss += loss.item() * batch_x.size(0)
-            
-            epoch_loss /= len(X_train)
+            epoch_loss = train_step(model, criterion, optimizer, train_loader, device)
             loss_curve.append(epoch_loss)
 
             # Validation step to check for best checkpoint and update scheduler
@@ -254,45 +164,27 @@ def train_resnet_cv(
         model.load_state_dict(best_model_state)
         model.to(device)
 
-        # Save the fold checkpoint
-        checkpoint_path = os.path.join(output_dir, f"resnet_model_fold_{fold_num}.pkl")
-        checkpoint_data = {
-            "state_dict": best_model_state,
-            "scaler": scaler,
-            "loss_curve": loss_curve,
-            "val_loss_curve": val_loss_curve,
-            "hidden_dim": hidden_dim,
-            "dropout": dropout,
-            "weight_decay": weight_decay,
-            "noise_level": noise_level,
-            "patience": patience,
-            "input_dim": embeddings.shape[1]
-        }
-        with open(checkpoint_path, 'wb') as f:
-            pickle.dump(checkpoint_data, f)
-        print(f"Saved checkpoint to: {checkpoint_path}")
+        if save_checkpoints:
+            # Save the fold checkpoint
+            checkpoint_path = os.path.join(output_dir, f"resnet_model_fold_{fold_num}.pkl")
+            checkpoint_data = {
+                "state_dict": best_model_state,
+                "scaler": scaler,
+                "loss_curve": loss_curve,
+                "val_loss_curve": val_loss_curve,
+                "hidden_dim": hidden_dim,
+                "dropout": dropout,
+                "weight_decay": weight_decay,
+                "noise_level": noise_level,
+                "patience": patience,
+                "input_dim": embeddings.shape[1]
+            }
+            with open(checkpoint_path, 'wb') as f:
+                pickle.dump(checkpoint_data, f)
+            print(f"Saved checkpoint to: {checkpoint_path}")
 
-        # Save fold loss curve to separate PNG
-        try:
-            import matplotlib
-            matplotlib.use('Agg')  # Ensure non-interactive backend
-            import matplotlib.pyplot as plt
-            
-            plt.figure(figsize=(8, 5))
-            plt.plot(range(1, len(loss_curve) + 1), loss_curve, label='Training Loss', color='royalblue', linewidth=2)
-            plt.plot(range(1, len(val_loss_curve) + 1), val_loss_curve, label='Validation Loss', color='darkorange', linewidth=2)
-            plt.title(f'ResNet Training & Validation Loss - Fold {fold_num} (Always Normalized)')
-            plt.xlabel('Epoch')
-            plt.ylabel(f'Loss ({loss_type.upper()})')
-            plt.legend()
-            plt.grid(True, linestyle='--', alpha=0.6)
-            
-            plot_path = os.path.join(output_dir, f"loss_curve_fold_{fold_num}.png")
-            plt.savefig(plot_path, dpi=150)
-            plt.close()
-            print(f"Saved fold loss curve plot to: {plot_path}")
-        except Exception as e:
-            print(f"Could not generate fold loss curve plot: {e}")
+            # Save fold loss curve to separate PNG
+            save_loss_curves(loss_curve, val_loss_curve, fold_num, output_dir, loss_type)
 
         # Predict on validation set
         model.eval()
@@ -307,53 +199,41 @@ def train_resnet_cv(
         mae = mean_absolute_error(y_val_orig, y_pred_orig)
         r2 = r2_score(y_val_orig, y_pred_orig)
 
-        print(f"Fold {fold_num} results: MAE = {mae:.4f}, MSE = {mse:.4f}, R^2 = {r2:.4f}")
+        # Calculate validation Pearson Correlation Coefficient
+        df_val = pd.DataFrame({"prediction": y_pred_orig.flatten(), "label": y_val_orig.flatten()})
+        pearson_val = df_val.corr(method='pearson').iloc[0, 1]
+        if np.isnan(pearson_val):
+            pearson_val = -1.0
+
+        print(f"Fold {fold_num} results: MAE = {mae:.4f}, MSE = {mse:.4f}, R^2 = {r2:.4f}, Pearson = {pearson_val:.4f}")
         fold_maes.append(mae)
         fold_mses.append(mse)
         fold_r2s.append(r2)
+        fold_pearsons.append(pearson_val)
         all_loss_curves.append(loss_curve)
         all_val_loss_curves.append(val_loss_curve)
 
     # Save aggregated loss curves as CSV
-    try:
-        loss_data = {}
-        max_len = max(max(len(c) for c in all_loss_curves), max(len(c) for c in all_val_loss_curves))
-        for fold_idx in range(5):
-            train_curve = all_loss_curves[fold_idx]
-            val_curve = all_val_loss_curves[fold_idx]
-            padded_train = train_curve + [np.nan] * (max_len - len(train_curve))
-            padded_val = val_curve + [np.nan] * (max_len - len(val_curve))
-            loss_data[f"fold_{fold_idx+1}_train"] = padded_train
-            loss_data[f"fold_{fold_idx+1}_val"] = padded_val
-        loss_data["epoch"] = list(range(1, max_len + 1))
-        
-        df_loss = pd.DataFrame(loss_data)
-        cols = ['epoch']
-        for i in range(5):
-            cols.append(f"fold_{i+1}_train")
-            cols.append(f"fold_{i+1}_val")
-        df_loss = df_loss[cols]
-        
-        loss_csv_path = os.path.join(output_dir, "loss_curves.csv")
-        df_loss.to_csv(loss_csv_path, index=False)
-        print(f"Saved aggregated loss curves data to: {loss_csv_path}")
-    except Exception as e:
-        print(f"Could not save loss curves CSV: {e}")
+    if save_checkpoints:
+        save_loss_curves_as_csv(all_loss_curves, all_val_loss_curves, output_dir, loss_type)
 
     # Calculate average scores
     avg_mae = np.mean(fold_maes)
     avg_mse = np.mean(fold_mses)
     avg_r2 = np.mean(fold_r2s)
+    avg_pearson = np.mean(fold_pearsons)
 
     print(f"\nSummary (Always Normalized):")
     print(f"  Avg MAE: {avg_mae:.4f}")
     print(f"  Avg MSE: {avg_mse:.4f}")
     print(f"  Avg R^2: {avg_r2:.4f}")
+    print(f"  Avg Pearson: {avg_pearson:.4f}")
 
     return {
         'mae': avg_mae,
         'mse': avg_mse,
-        'r2': avg_r2
+        'r2': avg_r2,
+        'pearson': avg_pearson
     }
 
 def run_final_test_evaluation(
@@ -505,6 +385,113 @@ def run_training_experiment(
         dry_run=dry_run
     )
 
+def run_bayesian_optimization(
+    embeddings_path,
+    output_dir,
+    epochs,
+    batch_size,
+    patience,
+    loss_type,
+    dry_run,
+    lr_args,
+    weight_decay_args,
+    hidden_dim_args,
+    dropout_args,
+    noise_args,
+    init_points=5,
+    n_iter=15,
+    random_state=42
+):
+    print("\nInitializing Bayesian Optimization...")
+    params_dict = {
+        "lr": lr_args,
+        "weight_decay": weight_decay_args,
+        "hidden_dim": hidden_dim_args,
+        "dropout": dropout_args,
+        "noise": noise_args
+    }
+    
+    for name, val in params_dict.items():
+        if len(val) not in [1, 2]:
+            raise ValueError(f"Argument --{name} must have either 1 value (constant) or 2 values (range [min, max]). Got: {val}")
+
+    pbounds = {}
+    constants = {}
+    for name, val in params_dict.items():
+        if len(val) == 2:
+            pbounds[name] = (val[0], val[1])
+        else:
+            constants[name] = val[0]
+
+    print(f"Optimizing parameters over ranges: {pbounds}")
+    print(f"Keeping parameters constant: {constants}")
+
+    def objective_func(**kwargs):
+        eval_params = {}
+        for name in params_dict.keys():
+            if name in kwargs:
+                if name == "hidden_dim":
+                    eval_params[name] = int(round(kwargs[name]))
+                else:
+                    eval_params[name] = kwargs[name]
+            else:
+                if name == "hidden_dim":
+                    eval_params[name] = int(round(constants[name]))
+                else:
+                    eval_params[name] = constants[name]
+
+        print(f"\nEvaluating with parameters: {eval_params}")
+        
+        cv_results = train_resnet_cv(
+            embeddings_path=embeddings_path,
+            output_dir=output_dir,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=eval_params["lr"],
+            weight_decay=eval_params["weight_decay"],
+            hidden_dim=eval_params["hidden_dim"],
+            dropout=eval_params["dropout"],
+            noise_level=eval_params["noise"],
+            patience=patience,
+            loss_type=loss_type,
+            random_state=random_state,
+            dry_run=dry_run,
+            save_checkpoints=False
+        )
+        return cv_results["pearson"]
+
+    optimizer = BayesianOptimization(
+        f=objective_func,
+        pbounds=pbounds,
+        random_state=random_state,
+        verbose=2
+    )
+
+    optimizer.maximize(
+        init_points=init_points,
+        n_iter=n_iter
+    )
+
+    best_targets = optimizer.max["target"]
+    best_params = optimizer.max["params"]
+    print(f"\nBayesian Optimization completed! Best validation Pearson Correlation: {best_targets:.4f}")
+    print(f"Best parameters: {best_params}")
+
+    final_params = {}
+    for name, val in params_dict.items():
+        if name in best_params:
+            if name == "hidden_dim":
+                final_params[name] = int(round(best_params[name]))
+            else:
+                final_params[name] = float(best_params[name])
+        else:
+            if name == "hidden_dim":
+                final_params[name] = int(round(val[0]))
+            else:
+                final_params[name] = float(val[0])
+
+    return final_params
+
 def main():
     parser = argparse.ArgumentParser(description="Train ResNet MLP in PyTorch on AlphaGenome embeddings.")
     parser.add_argument(
@@ -554,27 +541,31 @@ def main():
     )
     parser.add_argument(
         "--lr",
+        nargs="+",
         type=float,
-        default=1e-3,
-        help="Learning rate for AdamW optimizer."
+        default=[1e-3],
+        help="Learning rate for AdamW optimizer (single float or range [min, max] for Bayesian optimization)."
     )
     parser.add_argument(
         "--weight_decay",
+        nargs="+",
         type=float,
-        default=1e-4,
-        help="Weight decay (L2 penalty) for AdamW optimizer."
+        default=[1e-4],
+        help="Weight decay (L2 penalty) for AdamW optimizer (single float or range [min, max] for Bayesian optimization)."
     )
     parser.add_argument(
         "--hidden_dim",
-        type=int,
-        default=512,
-        help="Hidden dimension size of ResNetMLP layers."
+        nargs="+",
+        type=float,
+        default=[512.0],
+        help="Hidden dimension size of ResNetMLP layers (single float or range [min, max] for Bayesian optimization)."
     )
     parser.add_argument(
         "--dropout",
+        nargs="+",
         type=float,
-        default=0.2,
-        help="Dropout probability."
+        default=[0.2],
+        help="Dropout probability (single float or range [min, max] for Bayesian optimization)."
     )
     parser.add_argument(
         "--loss",
@@ -591,9 +582,22 @@ def main():
     )
     parser.add_argument(
         "--noise",
+        nargs="+",
         type=float,
-        default=0.0,
-        help="Percentage of the standard deviation of Gaussian noise added to inputs during training (0.02 --> 2% of the std of the data)."
+        default=[0.0],
+        help="Percentage of the standard deviation of Gaussian noise added to inputs during training (0.02 --> 2% of the std of the data) (single float or range [min, max] for Bayesian optimization)."
+    )
+    parser.add_argument(
+        "--bayes_init_points",
+        type=int,
+        default=5,
+        help="Number of initial random exploration points for Bayesian optimization."
+    )
+    parser.add_argument(
+        "--bayes_n_iter",
+        type=int,
+        default=15,
+        help="Number of iterations for Bayesian optimization search."
     )
     parser.add_argument(
         "--dry-run",
@@ -602,30 +606,109 @@ def main():
     )
     args = parser.parse_args()
 
+    # Validate argument lengths
+    for name, val in [("lr", args.lr), ("weight_decay", args.weight_decay), ("hidden_dim", args.hidden_dim), ("dropout", args.dropout), ("noise", args.noise)]:
+        if len(val) not in [1, 2]:
+            raise ValueError(f"Argument --{name} must have either 1 value (constant) or 2 values (range [min, max]). Got: {val}")
+
+    is_bayes_opt = any(len(val) == 2 for val in [args.lr, args.weight_decay, args.hidden_dim, args.dropout, args.noise])
+
     if args.split:
         split_embeddings()
-    elif args.train or args.dry_run:
+    elif args.train or args.dry_run or (not args.test and os.path.exists(args.embeddings_path)):
+        if not args.train and not args.dry_run and os.path.exists(args.embeddings_path):
+            print(f"Found {args.embeddings_path}. Running training experiment...")
+
         # For dry-run, set epochs to a small number
         epochs = 2 if args.dry_run else args.epochs
-        run_training_experiment(
-            train_val_path=args.embeddings_path,
-            test_path=args.test_path,
-            output_dir=args.output_dir,
-            epochs=epochs,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            hidden_dim=args.hidden_dim,
-            dropout=args.dropout,
-            noise_level=args.noise,
-            patience=args.patience,
-            loss_type=args.loss,
-            dry_run=args.dry_run
-        )
+
+        if is_bayes_opt:
+            print("\n==========================================")
+            print("Running Bayesian Optimization for Hyperparameters")
+            print("==========================================")
+            best_params = run_bayesian_optimization(
+                embeddings_path=args.embeddings_path,
+                output_dir=args.output_dir,
+                epochs=epochs,
+                batch_size=args.batch_size,
+                patience=args.patience,
+                loss_type=args.loss,
+                dry_run=args.dry_run,
+                lr_args=args.lr,
+                weight_decay_args=args.weight_decay,
+                hidden_dim_args=args.hidden_dim,
+                dropout_args=args.dropout,
+                noise_args=args.noise,
+                init_points=args.bayes_init_points,
+                n_iter=args.bayes_n_iter,
+                random_state=42
+            )
+
+            # Format folder name with best parameters and create it
+            folder_name = (
+                f"best_lr{best_params['lr']:.2e}_"
+                f"wd{best_params['weight_decay']:.2e}_"
+                f"hd{best_params['hidden_dim']}_"
+                f"dr{best_params['dropout']:.2f}_"
+                f"ns{best_params['noise']:.2f}"
+            ).replace("+", "")
+
+            best_config_dir = os.path.join(args.output_dir, folder_name)
+            os.makedirs(best_config_dir, exist_ok=True)
+
+            # Save the config file
+            config_path = os.path.join(best_config_dir, "config.json")
+            with open(config_path, "w") as f:
+                json.dump(best_params, f, indent=4)
+            print(f"\nSaved optimal configuration to: {config_path}")
+
+            print("\n==========================================")
+            print("Running final training with optimal hyperparameters")
+            print(f"Output directory: {best_config_dir}")
+            print("==========================================")
+
+            run_training_experiment(
+                train_val_path=args.embeddings_path,
+                test_path=args.test_path,
+                output_dir=best_config_dir,
+                epochs=epochs,
+                batch_size=args.batch_size,
+                lr=best_params["lr"],
+                weight_decay=best_params["weight_decay"],
+                hidden_dim=best_params["hidden_dim"],
+                dropout=best_params["dropout"],
+                noise_level=best_params["noise"],
+                patience=args.patience,
+                loss_type=args.loss,
+                dry_run=args.dry_run
+            )
+        else:
+            # Standard single-value run
+            lr = args.lr[0]
+            weight_decay = args.weight_decay[0]
+            hidden_dim = int(round(args.hidden_dim[0]))
+            dropout = args.dropout[0]
+            noise_level = args.noise[0]
+
+            run_training_experiment(
+                train_val_path=args.embeddings_path,
+                test_path=args.test_path,
+                output_dir=args.output_dir,
+                epochs=epochs,
+                batch_size=args.batch_size,
+                lr=lr,
+                weight_decay=weight_decay,
+                hidden_dim=hidden_dim,
+                dropout=dropout,
+                noise_level=noise_level,
+                patience=args.patience,
+                loss_type=args.loss,
+                dry_run=args.dry_run
+            )
     elif args.test:
         # Check if checkpoints exist directly in the output directory
         has_checkpoints = os.path.exists(args.output_dir) and any(f.endswith(".pkl") for f in os.listdir(args.output_dir))
-        
+
         if has_checkpoints:
             best_config_dir = args.output_dir
         else:
@@ -636,28 +719,13 @@ def main():
             else:
                 print(f"Error: No trained models/checkpoints found in {args.output_dir}")
                 return
-            
+
         run_final_test_evaluation(
             test_path=args.test_path,
             best_config_dir=best_config_dir
         )
     else:
-        # If no explicit flag is set, run standard training if file exists
-        if os.path.exists(args.embeddings_path):
-            print(f"Found {args.embeddings_path}. Running training experiment...")
-            run_training_experiment(
-                train_val_path=args.embeddings_path,
-                test_path=args.test_path,
-                output_dir=args.output_dir,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                lr=args.lr,
-                hidden_dim=args.hidden_dim,
-                dropout=args.dropout,
-                loss_type=args.loss
-            )
-        else:
-            parser.print_help()
+        parser.print_help()
 
 if __name__ == "__main__":
     main()
