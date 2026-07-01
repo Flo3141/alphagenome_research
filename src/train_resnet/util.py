@@ -5,8 +5,8 @@ import os
 def load_embeddings(embeddings_path):
     data = np.load(embeddings_path)
     embeddings = data["embeddings"]
-    transcript_ids = data["ensembl_transcript_ids"]
-    half_lives = data["half_lives"]
+    transcript_ids = data["ensembl_transcript_id"]
+    half_lives = data["half_life"]
 
     print(f"Loaded embeddings from: {embeddings_path}")
     print("Embeddings Shape:", embeddings.shape)
@@ -33,8 +33,8 @@ def split_embeddings():
     print(f"Loading original embeddings from {all_embeddings_path}...")
     data = np.load(all_embeddings_path)
     embeddings = data["embeddings"]
-    transcript_ids = data["ensembl_transcript_ids"]
-    half_lives = data["half_lives"]
+    transcript_ids = data["ensembl_transcript_id"]
+    half_lives = data["half_life"]
 
     # Ensure transcript IDs are compared as strings
     transcript_ids_str = transcript_ids.astype(str)
@@ -56,8 +56,8 @@ def split_embeddings():
     np.savez(
         test_output_path,
         embeddings=embeddings[test_mask],
-        ensembl_transcript_ids=transcript_ids[test_mask],
-        half_lives=half_lives[test_mask]
+        ensembl_transcript_id=transcript_ids[test_mask],
+        half_life=half_lives[test_mask]
     )
     print(f"Successfully saved test embeddings to {test_output_path}")
 
@@ -65,8 +65,8 @@ def split_embeddings():
     np.savez(
         train_val_output_path,
         embeddings=embeddings[train_val_mask],
-        ensembl_transcript_ids=transcript_ids[train_val_mask],
-        half_lives=half_lives[train_val_mask]
+        ensembl_transcript_id=transcript_ids[train_val_mask],
+        half_life=half_lives[train_val_mask]
     )
     print(f"Successfully saved train/val embeddings to {train_val_output_path}")
 

@@ -94,10 +94,13 @@ def main():
                 seq_one_hot = one_hot_enc.encode(seq_str)
                 batch_seqs.append(seq_one_hot)
                 batch_orgs.append(0)  # HOMO_SAPIENS
-                batch_ids.append(row['ensembl_transcript_id'])
-                batch_hls.append(float(row['half_life']))
+                tx_id = row['ensembl_transcript_id']
+                hl = row['half_life']
+                batch_ids.append(tx_id)
+                batch_hls.append(float(hl))
             except Exception as e:
-                print(f"WARNUNG: Fehler beim Extrahieren der Sequenz an Index {idx} (Transcript ID: {row.get('ensembl_transcript_id', 'Unbekannt')}): {e}")
+                tx_id = row.get('ensembl_transcript_id', 'Unbekannt')
+                print(f"WARNUNG: Fehler beim Extrahieren der Sequenz an Index {idx} (Transcript ID: {tx_id}): {e}")
                 continue
 
             if len(batch_seqs) == args.batch_size:
@@ -145,8 +148,8 @@ def main():
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    np.savez(output_path, embeddings=all_embeddings, ensembl_transcript_ids=all_ids, half_lives=all_hls)
-    print(f"Embeddings, ensembl_transcript_ids und half_lives erfolgreich unter {output_path} gespeichert.")
+    np.savez(output_path, embeddings=all_embeddings, ensembl_transcript_id=all_ids, half_life=all_hls)
+    print(f"Embeddings, ensembl_transcript_id und half_life erfolgreich unter {output_path} gespeichert.")
 
 if __name__ == "__main__":
     main()

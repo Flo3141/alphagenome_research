@@ -25,23 +25,25 @@ def extract_columns(
       "start",
       "end",
   ]
+  extra_cols = ["sample", "feature_ID"]
 
   if "avg_donorm_halflife" in headers:
     print("Found 'avg_donorm_halflife' column in the input file.")
-    usecols = target_cols + ["avg_donorm_halflife"]
+    usecols = target_cols + extra_cols + ["avg_donorm_halflife"]
     df = pd.read_csv(input_path, usecols=usecols)
-    df = df[usecols]  # reorder
+    df["ensembl_transcript_id"] = df["sample"].astype(str) + "_" + df["feature_ID"].astype(str)
   elif "donorm_halflife" in headers:
     print(
         "Column 'avg_donorm_halflife' not found, but 'donorm_halflife' exists. "
         "Computing the average (mean) grouped by cell line and coordinates..."
     )
-    usecols = target_cols + ["donorm_halflife"]
+    usecols = target_cols + extra_cols + ["donorm_halflife"]
     df = pd.read_csv(input_path, usecols=usecols)
+    df["ensembl_transcript_id"] = df["sample"].astype(str) + "_" + df["feature_ID"].astype(str)
     
-    # Group by cell line and genomic coordinates, then calculate the average
+    # Group by cell line, genomic coordinates, and unique transcript IDs
     df = (
-        df.groupby(target_cols)["donorm_halflife"]
+        df.groupby(target_cols + extra_cols + ["ensembl_transcript_id"])["donorm_halflife"]
         .mean()
         .reset_index(name="avg_donorm_halflife")
     )
@@ -52,7 +54,7 @@ def extract_columns(
     )
 
   print(f"Writing extracted/computed data ({len(df)} rows) to: {output_path}")
-  df = df.rename(columns={"seqnames": "chromosome"})
+  df = df.rename(columns={"seqnames": "chromosome", "avg_donorm_halflife": "half_life"})
   df.to_csv(output_path, index=False)
   print("Extraction complete successfully.")
 
