@@ -70,9 +70,9 @@ def train_resnet_cv(
     else:
         embeddings, _, half_lives = load_embeddings(embeddings_path)
 
-    # Log transform targets (log1p)
-    print("Applying log1p transformation to target half-lives...")
-    half_lives = np.log1p(half_lives)
+    # Log transform targets (log)
+    print("Applying log transformation to target half-lives...")
+    half_lives = np.log(half_lives)
 
     # Bin the targets to stratify continuous target values
     print("Binning targets for stratification...")
@@ -192,9 +192,9 @@ def train_resnet_cv(
             val_x_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
             y_pred = model(val_x_tensor).cpu().numpy()
 
-        # Metrics (expm1 to evaluate in original scale)
-        y_val_orig = np.expm1(y_val)
-        y_pred_orig = np.expm1(y_pred)
+        # Metrics (exp to evaluate in original scale)
+        y_val_orig = np.exp(y_val)
+        y_pred_orig = np.exp(y_pred)
         mse = mean_squared_error(y_val_orig, y_pred_orig)
         mae = mean_absolute_error(y_val_orig, y_pred_orig)
         r2 = r2_score(y_val_orig, y_pred_orig)
@@ -253,8 +253,8 @@ def run_final_test_evaluation(
     else:
         X_test, _, y_test = load_embeddings(test_path)
 
-    # Log transform test targets (log1p)
-    y_test = np.log1p(y_test)
+    # Log transform test targets (log)
+    y_test = np.log(y_test)
 
     all_preds = []
     fold_mses = []
@@ -295,11 +295,17 @@ def run_final_test_evaluation(
         
         all_preds.append(y_pred_fold)
 
-        # Calculate fold-specific metrics in original scale (expm1)
-        y_pred_fold_orig = np.expm1(y_pred_fold)
-        y_test_orig = np.expm1(y_test)
+        # Calculate fold-specific metrics in original scale (exp)
+        y_pred_fold_orig = np.exp(y_pred_fold)
+        y_test_orig = np.exp(y_test)
         mse_f = np.mean((y_pred_fold_orig - y_test_orig) ** 2)
         df_f = pd.DataFrame({"prediction": y_pred_fold_orig, "label": y_test_orig})
+
+        # Save fold-specific predictions CSV
+        fold_csv_path = os.path.join(best_config_dir, f"test_predictions_fold_{fold_num}.csv")
+        df_f.to_csv(fold_csv_path, index=False)
+        print(f"Saved fold {fold_num} test predictions to: {fold_csv_path}")
+
         pearson_f = df_f.corr(method='pearson').iloc[0, 1]
         spearman_f = df_f.corr(method='spearman').iloc[0, 1]
 
@@ -337,8 +343,8 @@ def run_final_test_evaluation(
     print(f"Saved evaluation results to: {results_path}")
 
     # Save test predictions CSV (ensemble predictions in original scale)
-    y_test_orig = np.expm1(y_test)
-    y_pred_ensemble_orig = np.expm1(y_pred_ensemble)
+    y_test_orig = np.exp(y_test)
+    y_pred_ensemble_orig = np.exp(y_pred_ensemble)
     df_out = pd.DataFrame({
         "label": y_test_orig,
         "prediction": y_pred_ensemble_orig
